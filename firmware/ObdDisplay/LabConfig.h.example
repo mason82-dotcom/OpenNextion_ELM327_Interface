@@ -1,0 +1,7 @@
+#pragma once
+// LOCAL PI SIMULATOR ONLY. Never use the real ELM327 SSID or IP here.
+// Copy this example to LabConfig.h (excluded from Git) and edit locally.
+#define ELM_WIFI_SSID "YOUR_LOCAL_2_4GHZ_WIFI"
+#define ELM_WIFI_PASSWORD "YOUR_LOCAL_WIFI_PASSWORD"
+#define ELM_HOST "192.168.1.123"  // REPLACE with Pi LAN IP, not 127.0.0.1
+#define ELM_PORT 35000
