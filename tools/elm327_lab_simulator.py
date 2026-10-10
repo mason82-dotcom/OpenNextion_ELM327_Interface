@@ -39,7 +39,7 @@ RESPONSES = {
     "07": "47 00",            # no pending DTC
     "0A": "4A 00",            # no permanent DTC
 }
-ADAPTER_COMMANDS = {"ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATSP0"}
+ADAPTER_COMMANDS = {"ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATSP0", "ATDPN"}
 
 
 def answer_for(command: str) -> str:
@@ -47,6 +47,8 @@ def answer_for(command: str) -> str:
     command = command.strip().upper()
     if command == "ATZ":
         return "ELM327 LAB SIM v0.1"
+    if command == "ATDPN":
+        return "A6"  # ISO 15765-4 11-bit CAN 500 kbit/s (simulated)
     if command in ADAPTER_COMMANDS:
         return "OK"
     if command in RESPONSES:
