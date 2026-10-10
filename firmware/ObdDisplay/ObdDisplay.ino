@@ -501,7 +501,7 @@ static void updateExtraData() {
     summary += ": ";
     if (!pidSupported(p.pid)) summary += "n/v";
     else if (!pidValid[i]) summary += "--";
-    else summary += String(pidValues[i], p.decimals);
+    else summary += String(pidValues[i], static_cast<unsigned int>(p.decimals));
     if (pidValid[i]) {
       summary += " ";
       summary += p.unit;
