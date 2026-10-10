@@ -424,8 +424,14 @@ static void markDisconnected(const char *reason) {
   for (std::size_t i=0;i<obd_pids::count;++i) pidValid[i]=false;
   rpm = -1; coolantC = -1000; speedKph = -1;
   dtcEncoding = obd_diag::DtcEncoding::Unknown;
+  // A diagnostic scan belongs to one adapter session: never resume it
+  // automatically on a fresh TCP connection.
+  dtcScanRequested = false;
   inspectionRequested = false;
   misfireRequested = false;
+  dtcIndex = inspectionStep = misfireStep = 0;
+  inspectionReport = "";
+  misfireReport = "";
   if (extraDataText) lv_label_set_text(extraDataText, "Keine Verbindung");
   if (engineStateText) lv_label_set_text(engineStateText, "Betriebszustand: unbekannt");
   if (inspectionText) lv_label_set_text(inspectionText,
