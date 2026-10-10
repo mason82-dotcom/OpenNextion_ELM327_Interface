@@ -17,6 +17,8 @@ jobs:
           /tmp/obd-parser-test
           g++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/ObdDisplay tests/test_obd_pid_catalog.cpp -o /tmp/obd-pid-catalog-test
           /tmp/obd-pid-catalog-test
+          g++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/ObdDisplay tests/test_obd_diagnostics.cpp -o /tmp/obd-diagnostics-test
+          /tmp/obd-diagnostics-test
           python3 -m unittest discover -s tests -p 'test_*.py' -v
 
   firmware:
