@@ -36,8 +36,23 @@ veralteten Wert weiter anzuzeigen. Die INFO-Anzeige bezeichnet den
 kombinierten Zähler für fehlende/ungültige Antworten als
 **Antwortfehler** und nicht irreführend nur als Pufferfehler.
 
-Der neue Python-Integrationstest ist ein zusätzlicher Quellcode-Check,
-kein Hardware- oder Kommunikationsnachweis. Vor dem erneuten Flashen
+**Sitzungsverlust jetzt auf echter Hardware validiert:** Weitere Nutzerfotos
+zeigen während eines gestoppten Pi-Simulators `-- rpm`, `-- C`,
+`-- km/h`, ausdrücklich ungültige Mode-06-Ergebnisse und die Warnung
+`Verbindung verloren: vorherige HU/AU-Daten ungueltig. Neu lesen.`
+Die Verbindung wurde zuvor nach einem Timeout erfolgreich erneut
+aufgebaut. Damit ist die Invalidierung für den gezeigten Verlustfall
+bestätigt; ein kontrollierter ungültiger PID bei **bestehender TCP-Verbindung**
+ist noch separat zu testen.
+
+**Nachfolgende UI-Korrektur (noch nicht auf Hardware geprüft):**
+Im LAB-Modus erscheint bei fehlendem Pi die eindeutige Meldung
+`LAB: Pi-Simulator nicht erreichbar`. Beim Verbindungsverlust werden die
+HU/AU- und Mode-06-Scrollpositionen zurück an den Anfang gesetzt,
+damit die Ungültigkeitswarnung sofort sichtbar wird.
+
+Die Python-Integrationstests sind zusätzliche Quellcode-Checks,
+keine Hardware- oder Kommunikationsnachweise. Vor jedem erneuten Flashen
 müssen CI und `bash scripts/pi/build.sh lab` erfolgreich sein.
 
 ## Gegenüberstellung
@@ -120,3 +135,53 @@ neuen Feature-Portierung und der lokale LAB-Build erfolgreich sind.
 - Unbekannte DTC-Transportformate werden roh angezeigt statt geraten.
 - Ein fehlerfreier Simulator- oder CI-Test beweist **keine**
   Kompatibilität mit Fahrzeugsteuergeräten.
+
+
+## Gezielter NO-DATA-Test ohne TCP-Trennung
+
+Der Simulator besitzt eine **explizit einzuschaltende Laborfehler-Injektion**.
+Hierbei bleibt die TCP-Verbindung erhalten; nur eine ausgewählte
+Mode-01-PID bekommt die ELM-Antwort `NO DATA`.
+Unbekannte/unsichere Kommandos werden weiterhin mit `?` abgelehnt.
+Der Simulator kann keine Fahrzeugbefehle weiterleiten.
+
+**Vorbereitung:** Die derzeit laufende Simulator-Instanz mit Strg+C
+beenden. Die Firmware verwendet weiter die vorhandene lokale
+`LabConfig.h` und den LAB-Build; kein Wechsel zum Fahrzeugprofil.
+
+Terminal A auf dem Pi:
+
+```bash
+cd ~/Projekte/OpenNextion_ELM327_Interface
+rm -f /tmp/elm327-lab-pid-fault
+python3 tools/elm327_lab_simulator.py \
+  --bind 192.168.178.63 --port 35000 \
+  --fault-file /tmp/elm327-lab-pid-fault
+```
+
+Nach vollständiger Verbindung und angezeigten Testwerten im zweiten
+Pi-Terminal den Fehler **ohne Server-Neustart** einschalten:
+
+```bash
+printf '010C\n' > /tmp/elm327-lab-pid-fault
+```
+
+Erwartet: Das Simulatorprotokoll meldet
+`[LAB] INJECT NO DATA 010C (TCP remains open)`. Die ESP32-Firmware
+setzt Drehzahl auf `-- rpm`, der INFO-Zähler `Antwortfehler` steigt.
+Temperatur und Tempo bleiben weiterhin verfügbar. Der Verbindungsstatus
+sollte unverändert `LAB: Pi-Simulator verbunden` anzeigen.
+
+Fehler wieder ausschalten:
+
+```bash
+rm -f /tmp/elm327-lab-pid-fault
+```
+
+Erwartet: RPM erscheint nach der nächsten gültigen `010C`-Antwort
+erneut mit 1234 rpm – **ohne TCP-Neustart und ohne Löschen von Fehlercodes**.
+
+Andere einzelne Mode-01-PIDs, etwa `0105` oder `0107`, lassen sich
+entsprechend testen, sofern sie in der Simulator-Whitelist stehen.
+Bei diesem Test dürfen keine echten ELM327-Adapter oder Fahrzeuge
+angeschlossen sein.
