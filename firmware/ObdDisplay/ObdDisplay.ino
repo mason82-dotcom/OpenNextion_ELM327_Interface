@@ -434,15 +434,30 @@ static void markDisconnected(const char *reason) {
   misfireReport = "";
   if (extraDataText) lv_label_set_text(extraDataText, "Keine Verbindung");
   if (engineStateText) lv_label_set_text(engineStateText, "Betriebszustand: unbekannt");
-  if (inspectionText) lv_label_set_text(inspectionText,
-      "Verbindung verloren: vorherige HU/AU-Daten ungueltig. Neu lesen.");
-  if (misfireText) lv_label_set_text(misfireText,
-      "Verbindung verloren: vorherige Mode06-Daten ungueltig. Neu lesen.");
+  if (inspectionText) {
+    lv_label_set_text(inspectionText,
+        "Verbindung verloren: vorherige HU/AU-Daten ungueltig. Neu lesen.");
+    // The HU/AU list can have been scrolled to the bottom.
+    // Ensure the safety notice is visible immediately on link loss.
+    lv_obj_scroll_to_y(lv_obj_get_parent(inspectionText), 0, LV_ANIM_OFF);
+  }
+  if (misfireText) {
+    lv_label_set_text(misfireText,
+        "Verbindung verloren: vorherige Mode06-Daten ungueltig. Neu lesen.");
+    lv_obj_scroll_to_y(lv_obj_get_parent(misfireText), 0, LV_ANIM_OFF);
+  }
   if (scanText) lv_label_set_text(scanText, "Verbindung verloren: DTC neu lesen");
   for (int i=0;i<3;++i)
     if (dtcModeText[i]) lv_label_set_text(dtcModeText[i], "DTC: -- (getrennt)");
+#if defined(OBD_LAB_BUILD)
+  // A Pi TCP simulator is not a vehicle ECU; make LAB failures explicit.
+  lv_label_set_text(statusText, "LAB: Pi-Simulator nicht erreichbar");
+  lv_label_set_text(linkText, "LAB-Simulator: getrennt");
+  (void)reason;
+#else
   lv_label_set_text(statusText, reason);
   lv_label_set_text(linkText, "ELM327: getrennt");
+#endif
   lv_label_set_text(rpmText, "-- rpm");
   lv_label_set_text(coolantText, "-- C");
   lv_label_set_text(speedText, "-- km/h");
