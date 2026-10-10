@@ -37,9 +37,9 @@ class LabTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             filename = pathlib.Path(tmp) / "pid-fault"
             self.assertIsNone(lab.fault_pid_from_file(str(filename)))
-            filename.write_text("010C\\n", encoding="ascii")
+            filename.write_text("010C\n", encoding="ascii")
             self.assertEqual(lab.fault_pid_from_file(str(filename)), "010C")
-            filename.write_text("04\\n", encoding="ascii")
+            filename.write_text("04\n", encoding="ascii")
             self.assertIsNone(lab.fault_pid_from_file(str(filename)))
             filename.write_text("01FF", encoding="ascii")
             self.assertIsNone(lab.fault_pid_from_file(str(filename)))
