@@ -6,3 +6,7 @@ build/
 *.elf
 *.bin
 firmware/ObdDisplay/LabConfig.h
+
+# Python test caches
+__pycache__/
+*.py[cod]
