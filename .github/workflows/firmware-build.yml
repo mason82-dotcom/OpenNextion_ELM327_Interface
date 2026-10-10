@@ -9,10 +9,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Compile and run native allowlist tests
+      - name: Compile and run native allowlist and PID parser tests
         run: |
           g++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/ObdDisplay tests/test_read_only_policy.cpp -o /tmp/obd-policy-test
           /tmp/obd-policy-test
+          g++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/ObdDisplay tests/test_obd_response_parser.cpp -o /tmp/obd-parser-test
+          /tmp/obd-parser-test
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
 
   firmware:
     runs-on: ubuntu-latest
