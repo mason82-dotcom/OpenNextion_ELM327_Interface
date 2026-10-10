@@ -48,14 +48,51 @@ nicht weitergeleitet.
 Für einen **späteren** Hardware-Labortest den Simulator ausschließlich
 an die Pi-IP in einem kontrollierten, lokalen WLAN binden
 (z. B. `--bind 192.168.x.y`). Kein Router-Portforwarding.
-Das ESP32-Gerät benötigt eine lokale, von Git ignorierte
-`firmware/ObdDisplay/Config.h` mit **der WLAN-SSID und IP-Adresse
-des Pi**, nicht mit der SSID des realen ELM327.
+Für diesen Test gibt es jetzt ein **eigenes Buildprofil `lab`**.
+Das ESP32-Gerät benötigt `firmware/ObdDisplay/LabConfig.h`,
+niemals `Config.h`. Ein Lab-Build verweigert den Start des Compilers,
+wenn eine echte `Config.h` vorhanden ist. Vor dem ersten Fahrzeugkommando
+verifiziert die Firmware außerdem den genauen Begrüßungstext
+`ELM327 LAB SIM v0.1` aus dem Pi-Simulator; ein normaler ELM327
+wird vom Laborprofil damit abgewiesen.
 
-`ELM_HOST` muss dabei auf die IP des Pi und `ELM_PORT` auf 35000 zeigen.
-Erst nach bestandenem Parser-, Sicherheits- und Offline-Build
-`bash scripts/pi/build.sh connected` ausführen. Flashen nur nach
-gesonderter Freigabe.
+Auf dem Pi die Adresse und WLAN-Verbindung ermitteln:
+
+```bash
+ip -br -4 addr
+ip -4 route
+```
+
+Den Simulator im laufenden ersten Terminal mit Strg+C beenden und
+nur an die **für das ESP32-Gerät erreichbare Pi-LAN-IP** binden:
+
+```bash
+python3 tools/elm327_lab_simulator.py --bind DEINE_PI_IP --port 35000
+```
+
+`127.0.0.1` ist vom ESP32 **nicht** erreichbar. WLAN-Gerät und Pi
+müssen sich gegenseitig im lokalen Netz erreichen können, ohne
+Client-Isolation, Gastnetztrennung oder Firewall-Blockade. Das ESP32-S3
+benötigt ein kompatibles 2,4-GHz-WLAN.
+
+In zweitem Pi-Terminal:
+
+```bash
+cd ~/Projekte/OpenNextion_ELM327_Interface
+test ! -f firmware/ObdDisplay/Config.h
+cp firmware/ObdDisplay/LabConfig.h.example firmware/ObdDisplay/LabConfig.h
+chmod 600 firmware/ObdDisplay/LabConfig.h
+nano firmware/ObdDisplay/LabConfig.h
+bash scripts/pi/build.sh lab
+```
+
+In `LabConfig.h` ausschließlich **SSID und Passwort des lokalen
+Labor-WLANs** sowie `ELM_HOST="DEINE_PI_IP"` eintragen. Kein Passwort
+in den Chat oder das GitHub-Repository kopieren.
+
+Das Ergebnis ist `build/firmware-lab/ObdDisplay.ino.merged.bin`.
+**Noch nicht flashen, bevor der LAB-Build erfolgreich kompiliert und
+die Pi-IP eindeutig bestätigt ist.**
 
 ## Grenzen der aktuellen Diagnose
 
