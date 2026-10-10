@@ -6,7 +6,7 @@
 namespace obd_policy {
 enum class Command : std::uint8_t {
   AdapterReset, AdapterEchoOff, AdapterLinesOff, AdapterSpacesOff,
-  AdapterHeadersOff, AdapterAutoProtocol, SupportedPids00,
+  AdapterHeadersOff, AdapterAutoProtocol, AdapterProtocolId, SupportedPids00,
   Rpm, Coolant, Speed, StoredDtcs, PendingDtcs, PermanentDtcs,
   Load,
   Throttle,
@@ -87,6 +87,7 @@ constexpr const char* wireCommand(Command command) {
     case Command::AdapterSpacesOff: return "ATS0";
     case Command::AdapterHeadersOff: return "ATH0";
     case Command::AdapterAutoProtocol: return "ATSP0";
+    case Command::AdapterProtocolId: return "ATDPN";
     case Command::SupportedPids00: return "0100";
     case Command::Rpm: return "010C";
     case Command::Coolant: return "0105";
