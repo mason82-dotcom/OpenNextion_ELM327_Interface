@@ -2,7 +2,7 @@
 
 Eigenständiger OBD-II-Monitor auf dem **OpenNextion ONX3248G035** (ESP32-S3, 3,5" Touch) mit ELM327-WLAN-Adapter. Kein Smartphone und kein Raspberry Pi im Fahrzeug notwendig.
 
-> **Status: v0.2 Oberflächenprototyp – v0.1 Offline-Display und Touch am echten Board bestätigt, v0.2 Offline-Oberfläche anhand vier Nutzerfotos auf dem Board bestätigt. WLAN und Fahrzeugdiagnose NICHT validiert.**
+> **Status: v0.2 LAB hardwarevalidiert – LIVE/GRAPH/DTC/INFO, ESP32-S3 → WLAN → Pi-Simulator, drei Standard-PIDs und manuelle DTC-Rohdaten auf Fotos bestätigt. Echter ELM327-Dongle und Fahrzeugdiagnose weiterhin NICHT validiert.**
 > Hardware-/Fahrzeugfunktionen dürfen erst nach Display-, WLAN-, Parser- und Read-only-Prüfungen als funktionsfähig gelten.
 
 ## Umfang von v0.1/v0.2
@@ -13,7 +13,7 @@ Eigenständiger OBD-II-Monitor auf dem **OpenNextion ONX3248G035** (ESP32-S3, 3,
 - Abfrage der unterstützten Standard-PIDs (Mode 01 PID 00). Drehzahl, Kühlmitteltemperatur und Geschwindigkeit bei Unterstützung, jeweils nur als Livewerte.
 - **v0.2:** Navigation über vier Touchseiten LIVE, GRAPH, DTC und INFO; dunkles Diagramm mit 48 Messpunkten. 
 - **v0.2:** Getrennter Touch-Test und manuelle DTC-Schaltfläche: Seitenwechsel/Touch-Test lösen keine OBD-Abfragen aus. 
-- **v0.2:** WLAN-/ELM-Verbindungsanzeige und TX-/Timeout-/Antwortpuffer-Zähler (noch nicht am echten Adapter geprüft).
+- **v0.2:** WLAN-/ELM-Verbindungsanzeige und TX-/Timeout-/Antwortpuffer-Zähler (am Pi-Simulator bestätigt; echter Adapter nicht geprüft).
 - Gespeicherte (03), ausstehende (07) und permanente (0A) DTCs **zunächst als rohe Adapterantwort**, noch ohne vollständigen Multi-ECU-/ISO-TP-Dekoder.
 - Diagnose-Protokollzeilen über USB-Serial. **Noch keine persistente MicroSD-Aufzeichnung.**
 - Zentrale, geschlossene Allowlist; keine Mode 04/08, keine UDS-Schreibdienste, keine frei eingebbaren CAN-/ELM-Befehle, kein Terminal.
@@ -34,7 +34,7 @@ Keine Verantwortung für abweichendes Verhalten fehlerhafter ELM327-Klone oder n
 
 ### Auf Raspberry Pi 5 bauen (ohne Flashen)
 
-**Nach der bereits erfolgreich geflashten v0.1 nun v0.2 testen:** [Schritt-für-Schritt-Anleitung](docs/TOUCH-UI-V0.2-TEST.md). Zuerst `git pull --ff-only`, dann `bash scripts/pi/build.sh offline`. Erst nach erfolgreichem Build gezielt flashen.
+**Am Pi erfolgreich aufgespielt: Offline-v0.2 und Labormodus mit Pi-Simulator.** [Schritt-für-Schritt-Anleitung](docs/TOUCH-UI-V0.2-TEST.md). Zuerst `git pull --ff-only`, dann `bash scripts/pi/build.sh offline`. Erst nach erfolgreichem Build gezielt flashen.
 
 Der sichere **Offline-Build** hat keine `Config.h`, startet daher weder WLAN noch OBD-Kommunikation. Die LVGL-Konfigurationsflags werden durch das Buildskript auch an die C-Quelldateien der Bibliothek übergeben; ohne diese Flags schlägt LVGL 8.3.11 beim Arduino-CLI-Build fehl.
 
@@ -53,7 +53,7 @@ Zum reinen Kompilieren des vernetzten Firmwarezweigs erst eine **lokale, git-ign
 
 **Wichtig:** Der Offline- und Connected-Build werden zusätzlich in GitHub Actions kompiliert. Ein erfolgreicher Build ersetzt keinen Hardwaretest.
 
-Erst nach erfolgreich bestandenem Offline-Test für den verbundenen *Laborbetrieb* `firmware/ObdDisplay/Config.h.example` nach `Config.h` kopieren und SSID, Passwort und Adapteradresse lokal anpassen. `Config.h` ist von Git ausgenommen. Es existiert **kein automatischer Upload/Flash-Vorgang** in CI.
+Für den sicheren Pi-Simulator-Test das **separate** Laborprofil mit `LabConfig.h.example` und `bash scripts/pi/build.sh lab` nach [ELM-SIMULATOR.md](docs/ELM-SIMULATOR.md) verwenden. Das Fahrzeugprofil mit `Config.h` ist noch **nicht freigegeben**. Lokale Zugangsdaten bleiben aus Git ausgeschlossen. Es existiert **kein automatischer Upload/Flash-Vorgang** in CI.
 
 Native Policy-Tests (ohne ESP32-Toolchain):
 
@@ -64,6 +64,25 @@ g++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/ObdDisplay tests/test_read_only_
 
 ## Aktueller Entwicklungsstand / Laborprüfung
 
+**Bestätigter Pi-WLAN-Labortest (2026-10-11):** Im separaten `lab`-Profil
+meldet das echte OpenNextion-Display `LAB: Pi-Simulator verbunden`. Auf der
+LIVE-Seite wurden 1.234 rpm, 90 C und 0 km/h angezeigt; auf GRAPH die
+Drehzahlkurve, auf DTC die simulierten Antworten `43 00`, `47 00`,
+`4A 00` und auf INFO die bestätigte Simulator-Kennung. Zum Zeitpunkt
+des Fotos waren 175 Befehle bei 0 Timeouts und 0 Pufferfehlern gezählt.
+Das Serverprotokoll zeigt zyklische Leseanfragen `010C`, `0105`, `010D`
+sowie einmal `03`, `07`, `0A`. Das ist **kein Fahrzeugtest** und
+ersetzt keine Prüfung an einem echten ELM327-Adapter.
+
+**UI-Nachbesserung (nach Laborfoto, noch einmal am Board zu prüfen):**
+Die größeren Messwertkarten zeigen dynamisch nur `1234 rpm`, `90 C`,
+`0 km/h` statt wiederholter Überschriften; nach Verbindungsverlust
+gelten dieselben kurzen Platzhalter. Die GRAPH-Unterschrift unterscheidet
+nun explizit Offline-, Simulator- und reale Connected-Daten.
+Ein Regressionstest verhindert eine Wiederholung dieser Layoutprobleme.
+
+
+
 **Hardwarefoto-Befund (v0.2):** Alle Reiter LIVE, GRAPH, DTC und INFO sind sichtbar. Das RPM-Diagramm besitzt einen dunklen Hintergrund, die DTC-Schaltfläche ist im Offline-Modus deaktiviert und auf der INFO-Seite wurde der Touch-Zähler mit 8 registrierten Betätigungen fotografiert. Das ist eine UI-/Touch-Prüfung, **kein** Nachweis für korrekte OBD-Fahrzeugdaten.
 
 **Vor jeder ELM327-Fahrzeugverbindung:** Den Pi-Labortest gemäß
@@ -71,7 +90,7 @@ g++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/ObdDisplay tests/test_read_only_
 
 ## Geplante Ausbaustufen
 
-1. **v0.1**: Display-/Touch-Bring-up, geschlossene Read-only-Allowlist, Basis-PIDs, Roh-DTCs und RPM-Chart (Offline-Display und Touch real geprüft).\n2. **v0.2 UI**: vier Touchseiten, dunkles Diagramm und Verbindungsdiagnose (Offline-Build und Boardtest bestätigt).
+1. **v0.1**: Display-/Touch-Bring-up, geschlossene Read-only-Allowlist, Basis-PIDs, Roh-DTCs und RPM-Chart (Offline-Display und Touch real geprüft).\n2. **v0.2 UI**: vier Touchseiten, dunkles Diagramm und Verbindungsdiagnose (Offline- und Pi-Simulator-LAB-Boardtest bestätigt).
 3. **Weiterer v0.2 Diagnosestack**: ISO-TP-/Multi-ECU-Parser, vollständige DTC-Dekodierung, Freeze-Frames, Mode-01-PID-Erkennung, Timeout-/Reconnect-Härtung und Parser-Fuzzing.
 4. **v0.3**: MicroSD-CSV mit RTC-Zeit, Rotationsprinzip, Stromausfall-Schutz, Messintervalle und Export; Diagnoseprofile.
 5. **v0.4**: Zusätzliche Lesedaten (Fuel Trims, MAF, MAP, Readiness, Mode 06) und M272-spezifische Auswertung, sofern ECU unterstützt.
