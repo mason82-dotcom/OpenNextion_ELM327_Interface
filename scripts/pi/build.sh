@@ -40,8 +40,8 @@ printf 'Compiling %s firmware with global LVGL 8.3.11 flags.\n' "$MODE"
 printf 'Artifact directory: %s\nLog: %s\n' "$BUILD" "$LOG"
 if arduino-cli compile --clean --jobs 2 \
     --fqbn "$FQBN" \
-    --build-property 'compiler.c.extra_flags=-DLV_CONF_SKIP -DLV_COLOR_DEPTH=16' \
-    --build-property 'compiler.cpp.extra_flags=-DLV_CONF_SKIP -DLV_COLOR_DEPTH=16' \
+    --build-property 'compiler.c.extra_flags=-DLV_CONF_SKIP -DLV_COLOR_DEPTH=16 -DLV_FONT_MONTSERRAT_20=1 -DLV_FONT_MONTSERRAT_24=1' \
+    --build-property 'compiler.cpp.extra_flags=-DLV_CONF_SKIP -DLV_COLOR_DEPTH=16 -DLV_FONT_MONTSERRAT_20=1 -DLV_FONT_MONTSERRAT_24=1' \
     --build-path "$BUILD" \
     "$SKETCH" 2>&1 | tee "$LOG"; then
   printf '\nBUILD OK; NEVER FLASHED. Binaries:\n'
