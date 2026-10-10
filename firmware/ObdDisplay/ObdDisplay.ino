@@ -206,7 +206,11 @@ static void onInspectionButton(lv_event_t *event) {
   showPage(5);
 #if OBD_CONNECTED_BUILD
   if (!adapterReady) {lv_label_set_text(inspectionText,"Keine Verbindung");return;}
+#if defined(OBD_LAB_BUILD)
+  inspectionReport="HU/AU-Vorabcheck: SIMULIERTE OBD-Daten\n";
+#else
   inspectionReport="HU/AU-Vorabcheck: OBD-Lesedaten\n";
+#endif
   lv_label_set_text(inspectionText,inspectionReport.c_str());
   inspectionRequested=true; misfireRequested=false; dtcScanRequested=false;
   inspectionStep=0;
@@ -219,7 +223,11 @@ static void onMode06Button(lv_event_t *event) {
   showPage(6);
 #if OBD_CONNECTED_BUILD
   if (!adapterReady) {lv_label_set_text(misfireText,"Keine Verbindung");return;}
-  misfireReport="M272 Aussetzer / Mode 06 (simuliert im LAB)\n";
+#if defined(OBD_LAB_BUILD)
+  misfireReport="M272 Aussetzer / Mode 06 (LAB-SIMULATION)\n";
+#else
+  misfireReport="M272 Aussetzer / Mode 06 (ECU-Lesedaten)\n";
+#endif
   lv_label_set_text(misfireText,misfireReport.c_str());
   misfireRequested=true; inspectionRequested=false; dtcScanRequested=false;
   misfireStep=0;
@@ -322,7 +330,7 @@ static void buildUi() {
   lv_obj_add_state(dtcButton, LV_STATE_DISABLED);
 #endif
   scanText = label(pages[2], "Noch kein DTC-Scan", 12, 290, 292, MUTED);
-  label(pages[2], "Rohdaten: keine Dekodierung", 12, 322, 289, 0xFFCC76);
+  label(pages[2], "CAN/Legacy: begrenzte DTC-Dekodierung", 12, 322, 289, 0xFFCC76);
 
   // INFO: link diagnostics and local touch counter.
   label(pages[3], "SYSTEM / VERBINDUNG", 12, 3, 290, CYAN);
@@ -487,6 +495,11 @@ static bool initAdapter() {
   Serial.printf("OBD: PIDs 00=%08lX 20=%08lX 40=%08lX CAN=%d\n",
        (unsigned long)pidMasks[0],(unsigned long)pidMasks[1],
        (unsigned long)pidMasks[2],dtcEncoding==obd_diag::DtcEncoding::Can);
+#if defined(OBD_LAB_BUILD)
+  Serial.println("CSV_SOURCE,LAB_SIMULATED");
+#else
+  Serial.println("CSV_SOURCE,ECU_ADAPTER_UNVALIDATED");
+#endif
   Serial.println("CSV,millis,pid,label,value,unit,latency_ms");
   return true;
 }
