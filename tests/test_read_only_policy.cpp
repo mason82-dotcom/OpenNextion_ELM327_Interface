@@ -11,6 +11,7 @@ int main() {
   const Command allowed[] = {
       Command::AdapterReset, Command::AdapterEchoOff, Command::AdapterLinesOff,
       Command::AdapterSpacesOff, Command::AdapterHeadersOff, Command::AdapterAutoProtocol,
+      Command::AdapterProtocolId,
       Command::SupportedPids00, Command::Rpm, Command::Coolant,
       Command::Speed, Command::StoredDtcs, Command::PendingDtcs, Command::PermanentDtcs};
   for (const auto c : allowed) {
