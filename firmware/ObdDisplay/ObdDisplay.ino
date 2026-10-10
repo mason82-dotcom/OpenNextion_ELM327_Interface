@@ -38,7 +38,7 @@
 using obd_policy::Command;
 static constexpr uint32_t LCD_SPI_HZ = 80000000;
 static constexpr uint32_t WIFI_RETRY_MS = 12000;
-static constexpr uint32_t POLL_INTERVAL_MS = 500;
+static constexpr uint32_t POLL_INTERVAL_MS = 350;
 static constexpr uint16_t BUF_LINES = 40;
 static constexpr uint32_t CMD_TIMEOUT_MS = 1700;
 
@@ -190,6 +190,7 @@ static void onScanButton(lv_event_t *event) {
     lv_label_set_text(scanText, "ELM327 nicht verbunden");
     return;
   }
+  inspectionRequested = false; misfireRequested = false;
   dtcScanRequested = true;
   dtcIndex = 0;
   lv_label_set_text(scanText, "DTC-Leseabfrage angefordert");
@@ -561,13 +562,129 @@ static void scanOneDtcMode() {
     markDisconnected("DTC: Timeout/Sync-Verlust");
     dtcScanRequested = false; return;
   }
-  // Raw result, deliberately not parsed as trustworthy ECU error codes yet.
   Serial.printf("DTC_RAW,%s,%s\n", names[dtcIndex], answer.c_str());
-  String preview = answer.substring(0, 38);
-  lv_label_set_text_fmt(dtcModeText[dtcIndex], "%s: %s", names[dtcIndex], preview.c_str());
-  lv_label_set_text(scanText, "Leseabfrage abgeschlossen / Rohdaten");
+  const uint8_t responseMode[] = {0x43,0x47,0x4A};
+  auto dtcs=obd_diag::parseDtcs(answer.c_str(),responseMode[dtcIndex],dtcEncoding);
+  if (!dtcs.gotAnswer || dtcs.malformed) {
+    String preview=answer.substring(0,30);
+    lv_label_set_text_fmt(dtcModeText[dtcIndex],"%s: RAW %s",
+                          names[dtcIndex],preview.c_str());
+    lv_label_set_text(scanText,"DTC-Format nicht sicher dekodierbar");
+  } else if (dtcs.count==0) {
+    lv_label_set_text_fmt(dtcModeText[dtcIndex],"%s: keine",names[dtcIndex]);
+    lv_label_set_text(scanText,"Leseabfrage abgeschlossen");
+  } else {
+    lv_label_set_text_fmt(dtcModeText[dtcIndex],"%s: %s (+%u)",
+        names[dtcIndex],dtcs.entries[0].code,(unsigned)(dtcs.count-1));
+    const char *hint=obd_diag::m272Hint(dtcs.entries[0].code);
+    if (hint) lv_label_set_text_fmt(scanText,"M272-Hinweis: %s",hint);
+    else lv_label_set_text(scanText,"Codes siehe seriellem Rohprotokoll");
+    for (std::size_t i=0;i<dtcs.count;++i)
+      Serial.printf("DTC,%s,%s\n",names[dtcIndex],dtcs.entries[i].code);
+  }
   ++dtcIndex;
   if (dtcIndex == 3) dtcScanRequested = false;
+}
+
+static void scanInspectionStep() {
+  static const Command commands[] = {
+      Command::Readiness,Command::MilDistance,Command::Warmups,
+      Command::ClearDistance,Command::FreezeDtc,Command::StoredDtcs,
+      Command::PendingDtcs,Command::PermanentDtcs};
+  if (inspectionStep>=8) {inspectionRequested=false;return;}
+  const Command c=commands[inspectionStep];
+  String response;
+  if (!transact(c,response,3500)) {
+    markDisconnected("HU/AU: Adapter-Synchronisation verloren");
+    inspectionRequested=false; return;
+  }
+  uint8_t data[2] = {};
+  if (inspectionStep==0) {
+    obd_diag::Readiness readiness;
+    if (obd_diag::parseReadiness(response.c_str(),readiness)) {
+      inspectionReport += "MIL: ";
+      inspectionReport += readiness.mil ? "AN\n" : "AUS\n";
+      inspectionReport += "ECU-DTC-Anzahl: "+String(readiness.dtcs)+"\n";
+      inspectionReport += "ECUs: "+String(readiness.ecus)+"\n";
+      inspectionReport += "Monitore offen: "+String(readiness.incompleteCount())+"\n";
+      for (int i=0;i<11;++i) {
+        const bool supported=i<3 ?
+            (readiness.supportedContinuous & (1u<<i)) :
+            (readiness.supportedOther & (1u<<(i-3)));
+        if (!supported) continue;
+        const bool incomplete=i<3 ?
+            (readiness.openContinuous & (1u<<i)) :
+            (readiness.openOther & (1u<<(i-3)));
+        inspectionReport += String(obd_diag::monitorName(i,readiness.compression));
+        inspectionReport += incomplete ? ": offen\n" : ": fertig\n";
+      }
+      if (readiness.mil || readiness.dtcs>0 || readiness.incompleteCount()>0)
+        inspectionReport += "OBD-Monitore: auffaellig\n";
+      else inspectionReport += "OBD-Monitore: derzeit abgeschlossen\n";
+    } else inspectionReport += "Readiness: nicht verfuegbar\n";
+  } else if (inspectionStep>=1 && inspectionStep<=3) {
+    const uint8_t pids[]={0x21,0x30,0x31};
+    const char *labels[]={"km mit MIL","Warmlaeufe nach Reset","km nach Reset"};
+    uint8_t pid=pids[inspectionStep-1];
+    const int needed=pid==0x30?1:2;
+    if (obd_response::readPid(response.c_str(),pid,data,needed)) {
+      int v=needed==1 ? data[0] : (data[0]<<8)|data[1];
+      inspectionReport+=String(labels[inspectionStep-1])+": "+String(v)+"\n";
+    } else inspectionReport+=String(labels[inspectionStep-1])+": n/v\n";
+  } else if (inspectionStep==4) {
+    if (obd_response::readFreezeFrame00(response.c_str(),0x02,data,2)) {
+      if (data[0]!=0 || data[1]!=0) {
+        char code[6];obd_diag::decodeDtc(data[0],data[1],code);
+        inspectionReport+="Freeze-Frame DTC: "+String(code)+"\n";
+      } else inspectionReport+="Freeze-Frame DTC: keiner\n";
+    } else inspectionReport+="Freeze-Frame DTC: n/v\n";
+  } else {
+    const char *labels[]={"Gespeichert","Pending","Permanent"};
+    const uint8_t modes[]={0x43,0x47,0x4A};
+    const uint8_t i=inspectionStep-5;
+    auto dtcs=obd_diag::parseDtcs(response.c_str(),modes[i],dtcEncoding);
+    if(!dtcs.gotAnswer || dtcs.malformed)
+      inspectionReport+=String(labels[i])+": nicht sicher lesbar\n";
+    else {
+      inspectionReport+=String(labels[i])+": "+String(dtcs.count)+"\n";
+      for (std::size_t c=0;c<dtcs.count && c<8;++c)
+        inspectionReport+="  "+String(dtcs.entries[c].code)+"\n";
+    }
+  }
+  lv_label_set_text(inspectionText,inspectionReport.c_str());
+  ++inspectionStep;
+  if (inspectionStep>=8) {
+    inspectionReport+="OBD-Vorabcheck beendet. Keine amtliche HU/AU-Freigabe.\n";
+    lv_label_set_text(inspectionText,inspectionReport.c_str());
+    inspectionRequested=false;
+  }
+}
+
+static void scanMisfireStep() {
+  if(misfireStep>=6){misfireRequested=false;return;}
+  static const Command modes[]={
+      Command::MisfireCyl1,Command::MisfireCyl2,Command::MisfireCyl3,
+      Command::MisfireCyl4,Command::MisfireCyl5,Command::MisfireCyl6};
+  String reply;
+  if(!transact(modes[misfireStep],reply,3500)){
+    markDisconnected("Mode06: Adapter-Synchronisation verloren");
+    misfireRequested=false;return;
+  }
+  obd_diag::Misfire m;
+  const uint8_t cyl=misfireStep+1;
+  misfireReport+="Zyl. "+String(cyl)+" (B"+String(cyl<=3?1:2)+"): ";
+  if(obd_diag::parseMisfire(reply.c_str(),cyl,m)) {
+    misfireReport+="EWMA "+String(m.hasEwma ? String(m.ewma) : String("--"));
+    misfireReport+=" / Zyklus "+String(m.hasCurrent ? String(m.current) : String("--"));
+  } else misfireReport+="nicht verfuegbar (UASID24)";
+  misfireReport+="\n";
+  lv_label_set_text(misfireText,misfireReport.c_str());
+  ++misfireStep;
+  if(misfireStep>=6){
+    misfireReport+="Nur SAE Mode06. Keine Stellgliedpruefung.\n";
+    lv_label_set_text(misfireText,misfireReport.c_str());
+    misfireRequested=false;
+  }
 }
 #endif // OBD_CONNECTED_BUILD
 
@@ -634,7 +751,9 @@ void loop() {
   }
   if (adapterReady && now - lastPoll >= POLL_INTERVAL_MS) {
     lastPoll = now;
-    if (dtcScanRequested) scanOneDtcMode();
+    if (inspectionRequested) scanInspectionStep();
+    else if (misfireRequested) scanMisfireStep();
+    else if (dtcScanRequested) scanOneDtcMode();
     else pollOnePid();
   }
 #endif
