@@ -42,3 +42,9 @@ jobs:
           cp firmware/ObdDisplay/Config.h.example firmware/ObdDisplay/Config.h
           trap 'rm -f firmware/ObdDisplay/Config.h' EXIT
           bash scripts/pi/build.sh connected
+      - name: Pi-simulator-only LAB compile (placeholder config, never flash)
+        run: |
+          test ! -f firmware/ObdDisplay/Config.h
+          cp firmware/ObdDisplay/LabConfig.h.example firmware/ObdDisplay/LabConfig.h
+          trap 'rm -f firmware/ObdDisplay/LabConfig.h' EXIT
+          bash scripts/pi/build.sh lab
