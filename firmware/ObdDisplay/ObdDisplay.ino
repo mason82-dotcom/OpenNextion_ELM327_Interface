@@ -14,7 +14,13 @@
 #include "ReadOnlyPolicy.h"
 #include "ObdResponseParser.h"
 
+#if defined(OBD_LAB_BUILD)
 #if __has_include("Config.h")
+#error "Lab mode requires Config.h to be absent; keep vehicle configuration separate."
+#endif
+#include "LabConfig.h"
+#define OBD_CONNECTED_BUILD 1
+#elif __has_include("Config.h")
 #include "Config.h"
 #define OBD_CONNECTED_BUILD 1
 #else
@@ -349,12 +355,27 @@ static bool initAdapter() {
   for (Command c : setup) {
     if (!transact(c, response, c == Command::AdapterReset ? 3500 : 1700)) return false;
     if (response.indexOf('?') >= 0 || response.indexOf("ERROR") >= 0) return false;
+#if defined(OBD_LAB_BUILD)
+    // Fail closed: no PID/DTC request unless the dedicated Pi simulator
+    // positively identified itself. A real ELM327 must not pass this gate.
+    if (c == Command::AdapterReset &&
+        response.indexOf("ELM327 LAB SIM v0.1") < 0) {
+      Serial.println("LAB SAFETY: unexpected adapter identity; no vehicle requests");
+      adapter.stop();
+      return false;
+    }
+#endif
   }
   if (!transact(Command::SupportedPids00, response, 3000)) return false;
   if (!obd_response::supportedPids00(response.c_str(), pidMask)) return false;
   adapterReady = true;
+#if defined(OBD_LAB_BUILD)
+  lv_label_set_text(statusText, "LAB: Pi-Simulator verbunden");
+  lv_label_set_text(linkText, "LAB-Simulator: ID bestaetigt");
+#else
   lv_label_set_text(statusText, "ELM327 verbunden | Mode 01 aktiv");
   lv_label_set_text(linkText, "WLAN / ELM327: verbunden");
+#endif
   Serial.printf("OBD: Supported PIDs bitmap=0x%08lX\n", (unsigned long)pidMask);
   return true;
 }
@@ -432,9 +453,15 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(ELM_WIFI_SSID, ELM_WIFI_PASSWORD);
   lastAttempt = millis();
+#if defined(OBD_LAB_BUILD)
+  lv_label_set_text(statusText, "LABOR: Pi-Simulator / kein Fahrzeug");
+  lv_label_set_text(linkText, "Labor-WLAN: verbindet...");
+  Serial.println("OBD DIAG: LAB BUILD; SIMULATOR IDENTITY REQUIRED");
+#else
   lv_label_set_text(statusText, "WLAN zum ELM327 startet...");
   lv_label_set_text(linkText, "WLAN: verbindet...");
   Serial.println("OBD DIAG: CONNECTED BUILD; READ-ONLY COMMAND POLICY");
+#endif
 #else
   lv_label_set_text(statusText, "OFFLINE-TEST | WLAN und OBD AUS");
   lv_label_set_text(linkText, "WLAN / OBD: ausgeschaltet");
