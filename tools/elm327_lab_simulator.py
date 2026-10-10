@@ -2,6 +2,7 @@
 """Labor-only ELM327 TCP simulator. NO vehicle, Bluetooth, CAN or USB access."""
 import argparse
 import socketserver
+from pathlib import Path
 
 # Standard Mode 01 supported PIDs: 05 coolant, 0C RPM, 0D speed.
 RESPONSES = {
@@ -42,7 +43,7 @@ RESPONSES = {
 ADAPTER_COMMANDS = {"ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATSP0", "ATDPN"}
 
 
-def answer_for(command: str) -> str:
+def answer_for(command: str, fault_pid: str | None = None) -> str:
     """Return only fixture responses, never execute or forward a command."""
     command = command.strip().upper()
     if command == "ATZ":
@@ -51,9 +52,30 @@ def answer_for(command: str) -> str:
         return "A6"  # ISO 15765-4 11-bit CAN 500 kbit/s (simulated)
     if command in ADAPTER_COMMANDS:
         return "OK"
+    if command == fault_pid and command in RESPONSES and command.startswith("01"):
+        # Deliberately invalid PID response while keeping TCP connected.
+        return "NO DATA"
     if command in RESPONSES:
         return RESPONSES[command]
     return "?"
+
+
+def fault_pid_from_file(path: str | None) -> str | None:
+    """Read-only PID-specific fault switch; ignored when missing or invalid.
+
+    The fault file is inspected per command, so it can be added or removed
+    during one ongoing ESP32-to-Pi session without stopping the TCP server.
+    This is strictly a test server; no command ever reaches a vehicle.
+    """
+    if not path:
+        return None
+    try:
+        value = Path(path).read_text(encoding="ascii").strip().upper()
+    except (OSError, UnicodeError):
+        return None
+    if len(value) == 4 and value.startswith("01") and value in RESPONSES:
+        return value
+    return None
 
 
 class ElmCrHandler(socketserver.BaseRequestHandler):
@@ -78,7 +100,10 @@ class ElmCrHandler(socketserver.BaseRequestHandler):
                         if not cmd:
                             continue
                         print(f"[LAB] RX {cmd}", flush=True)
-                        reply = answer_for(cmd)
+                        fault_pid = fault_pid_from_file(self.server.fault_file)
+                        reply = answer_for(cmd, fault_pid)
+                        if reply == "NO DATA" and fault_pid == cmd:
+                            print(f"[LAB] INJECT NO DATA {cmd} (TCP remains open)", flush=True)
                         if reply == "?":
                             print(f"[LAB] REJECT {cmd}", flush=True)
                         payload = ((cmd + "\r") if echo else "") + reply + "\r>"
@@ -108,9 +133,14 @@ def main():
     parser.add_argument("--bind", default="127.0.0.1",
                         help="default loopback only; use Pi LAN IP explicitly for ESP32 bench tests")
     parser.add_argument("--port", type=int, default=35000)
+    parser.add_argument("--fault-file", default=None,
+                        help="optional local file containing a permitted Mode 01 PID; return NO DATA for it")
     args = parser.parse_args()
     with Server((args.bind, args.port), ElmCrHandler) as server:
+        server.fault_file = args.fault_file
         print(f"[LAB] ELM327 simulator listening on {args.bind}:{args.port}", flush=True)
+        if server.fault_file:
+            print("[LAB] PID fault injection enabled (inactive until file exists)", flush=True)
         print("[LAB] No vehicle/OBD adapter required; Ctrl+C to stop", flush=True)
         try:
             server.serve_forever(poll_interval=0.2)
