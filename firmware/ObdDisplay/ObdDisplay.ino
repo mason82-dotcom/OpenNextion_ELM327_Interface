@@ -390,7 +390,7 @@ static bool transact(Command command, String &answer, uint32_t timeoutMs = CMD_T
   adapter.print(wire);
   adapter.write('\r');
   ++txCount;
-  lv_label_set_text_fmt(statsText, "Gesendete Befehle: %lu\nTimeouts: %lu  Pufferfehler: %lu",
+  lv_label_set_text_fmt(statsText, "Gesendete Befehle: %lu\nTimeouts: %lu  Antwortfehler: %lu",
       (unsigned long)txCount, (unsigned long)timeoutCount,
       (unsigned long)inputErrorCount);
   answer = "";
@@ -428,6 +428,13 @@ static void markDisconnected(const char *reason) {
   misfireRequested = false;
   if (extraDataText) lv_label_set_text(extraDataText, "Keine Verbindung");
   if (engineStateText) lv_label_set_text(engineStateText, "Betriebszustand: unbekannt");
+  if (inspectionText) lv_label_set_text(inspectionText,
+      "Verbindung verloren: vorherige HU/AU-Daten ungueltig. Neu lesen.");
+  if (misfireText) lv_label_set_text(misfireText,
+      "Verbindung verloren: vorherige Mode06-Daten ungueltig. Neu lesen.");
+  if (scanText) lv_label_set_text(scanText, "Verbindung verloren: DTC neu lesen");
+  for (int i=0;i<3;++i)
+    if (dtcModeText[i]) lv_label_set_text(dtcModeText[i], "DTC: -- (getrennt)");
   lv_label_set_text(statusText, reason);
   lv_label_set_text(linkText, "ELM327: getrennt");
   lv_label_set_text(rpmText, "-- rpm");
@@ -535,8 +542,25 @@ static void pollOnePid() {
   uint8_t bytes[2];
   if (!obd_response::readPid(response.c_str(), p.pid, bytes,
                              obd_pids::bytesNeeded(p.formula))) {
+    // A previous measurement is no longer valid when this PID was polled
+    // but no usable reply arrived. Never display an obsolete reading.
+    pidValid[index] = false;
     ++inputErrorCount;
-    return; // no substitute zero or stale value
+    if (p.pid==0x0C) {
+      rpm=-1;
+      lv_label_set_text(rpmText,"-- rpm");
+      if (engineStateText) lv_label_set_text(engineStateText,
+          "Motorstatus: Drehzahl derzeit nicht verfuegbar");
+    } else if (p.pid==0x05) {
+      coolantC=-1000;
+      lv_label_set_text(coolantText,"-- C");
+    } else if (p.pid==0x0D) {
+      speedKph=-1;
+      lv_label_set_text(speedText,"-- km/h");
+    }
+    updateExtraData();
+    Serial.printf("PID_UNAVAILABLE,01%02X\n",p.pid);
+    return;
   }
   double value;
   if (!obd_pids::decode(p, bytes, obd_pids::bytesNeeded(p.formula), value))
