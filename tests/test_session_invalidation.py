@@ -35,6 +35,22 @@ class SessionInvalidationTest(unittest.TestCase):
         ):
             self.assertIn(fragment, f)
 
+    def test_scrolled_warning_is_repositioned(self):
+        f = section("static void markDisconnected(", "static bool pidSupported(")
+        self.assertIn(
+            "lv_obj_scroll_to_y(lv_obj_get_parent(inspectionText), 0, LV_ANIM_OFF);",
+            f,
+        )
+        self.assertIn(
+            "lv_obj_scroll_to_y(lv_obj_get_parent(misfireText), 0, LV_ANIM_OFF);",
+            f,
+        )
+
+    def test_lab_status_does_not_claim_vehicle_ecu(self):
+        f = section("static void markDisconnected(", "static bool pidSupported(")
+        self.assertIn("LAB: Pi-Simulator nicht erreichbar", f)
+        self.assertIn("LAB-Simulator: getrennt", f)
+
     def test_missing_pid_invalidates_cached_sample(self):
         f = section("static void pollOnePid()", "static void scanOneDtcMode()")
         self.assertIn("pidValid[index] = false;", f)
