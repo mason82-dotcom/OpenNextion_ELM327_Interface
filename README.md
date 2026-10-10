@@ -2,7 +2,7 @@
 
 Eigenständiger OBD-II-Monitor auf dem **OpenNextion ONX3248G035** (ESP32-S3, 3,5" Touch) mit ELM327-WLAN-Adapter. Kein Smartphone und kein Raspberry Pi im Fahrzeug notwendig.
 
-> **Status: v0.2 Oberflächenprototyp – v0.1 Offline-Display und Touch am echten Board bestätigt, v0.2 noch nicht am Board geprüft. WLAN und Fahrzeugdiagnose NICHT validiert.**
+> **Status: v0.2 Oberflächenprototyp – v0.1 Offline-Display und Touch am echten Board bestätigt, v0.2 Offline-Oberfläche anhand vier Nutzerfotos auf dem Board bestätigt. WLAN und Fahrzeugdiagnose NICHT validiert.**
 > Hardware-/Fahrzeugfunktionen dürfen erst nach Display-, WLAN-, Parser- und Read-only-Prüfungen als funktionsfähig gelten.
 
 ## Umfang von v0.1/v0.2
@@ -11,7 +11,9 @@ Eigenständiger OBD-II-Monitor auf dem **OpenNextion ONX3248G035** (ESP32-S3, 3,
 - Ohne lokale `Config.h` **vollständig offline**: Display-/Touchtest ohne WLAN und ohne OBD-Traffic.
 - Optionaler WLAN/TCP-Betrieb mit ELM327-Adapter über feste, typisierte Leseanfragen.
 - Abfrage der unterstützten Standard-PIDs (Mode 01 PID 00). Drehzahl, Kühlmitteltemperatur und Geschwindigkeit bei Unterstützung, jeweils nur als Livewerte.
-- **v0.2:** Navigation über vier Touchseiten LIVE, GRAPH, DTC und INFO; dunkles Diagramm mit 48 Messpunkten.\n- **v0.2:** Getrennter Touch-Test und manuelle DTC-Schaltfläche: Seitenwechsel/Touch-Test lösen keine OBD-Abfragen aus.\n- **v0.2:** WLAN-/ELM-Verbindungsanzeige und TX-/Timeout-/Antwortpuffer-Zähler (noch nicht am echten Adapter geprüft).
+- **v0.2:** Navigation über vier Touchseiten LIVE, GRAPH, DTC und INFO; dunkles Diagramm mit 48 Messpunkten. 
+- **v0.2:** Getrennter Touch-Test und manuelle DTC-Schaltfläche: Seitenwechsel/Touch-Test lösen keine OBD-Abfragen aus. 
+- **v0.2:** WLAN-/ELM-Verbindungsanzeige und TX-/Timeout-/Antwortpuffer-Zähler (noch nicht am echten Adapter geprüft).
 - Gespeicherte (03), ausstehende (07) und permanente (0A) DTCs **zunächst als rohe Adapterantwort**, noch ohne vollständigen Multi-ECU-/ISO-TP-Dekoder.
 - Diagnose-Protokollzeilen über USB-Serial. **Noch keine persistente MicroSD-Aufzeichnung.**
 - Zentrale, geschlossene Allowlist; keine Mode 04/08, keine UDS-Schreibdienste, keine frei eingebbaren CAN-/ELM-Befehle, kein Terminal.
@@ -60,9 +62,16 @@ g++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/ObdDisplay tests/test_read_only_
 /tmp/obd-policy-test
 ```
 
+## Aktueller Entwicklungsstand / Laborprüfung
+
+**Hardwarefoto-Befund (v0.2):** Alle Reiter LIVE, GRAPH, DTC und INFO sind sichtbar. Das RPM-Diagramm besitzt einen dunklen Hintergrund, die DTC-Schaltfläche ist im Offline-Modus deaktiviert und auf der INFO-Seite wurde der Touch-Zähler mit 8 registrierten Betätigungen fotografiert. Das ist eine UI-/Touch-Prüfung, **kein** Nachweis für korrekte OBD-Fahrzeugdaten.
+
+**Vor jeder ELM327-Fahrzeugverbindung:** Den Pi-Labortest gemäß
+[ELM-SIMULATOR.md](docs/ELM-SIMULATOR.md) durchlaufen. Die Mode-01-Auswertung wurde auf einen strikt zeilenorientierten Parser umgestellt; dieser akzeptiert nur vollständige, headerlose 0x41-PID-Antworten und verwirft unsichere oder fehlerhafte Formate. DTCs bleiben unverändert Rohdaten ohne bestätigte ISO-TP-Dekodierung.
+
 ## Geplante Ausbaustufen
 
-1. **v0.1**: Display-/Touch-Bring-up, geschlossene Read-only-Allowlist, Basis-PIDs, Roh-DTCs und RPM-Chart (Offline-Display und Touch real geprüft).\n2. **v0.2 UI**: vier Touchseiten, dunkles Diagramm und Verbindungsdiagnose (Firmware-Build und Boardtest erforderlich).
+1. **v0.1**: Display-/Touch-Bring-up, geschlossene Read-only-Allowlist, Basis-PIDs, Roh-DTCs und RPM-Chart (Offline-Display und Touch real geprüft).\n2. **v0.2 UI**: vier Touchseiten, dunkles Diagramm und Verbindungsdiagnose (Offline-Build und Boardtest bestätigt).
 3. **Weiterer v0.2 Diagnosestack**: ISO-TP-/Multi-ECU-Parser, vollständige DTC-Dekodierung, Freeze-Frames, Mode-01-PID-Erkennung, Timeout-/Reconnect-Härtung und Parser-Fuzzing.
 4. **v0.3**: MicroSD-CSV mit RTC-Zeit, Rotationsprinzip, Stromausfall-Schutz, Messintervalle und Export; Diagnoseprofile.
 5. **v0.4**: Zusätzliche Lesedaten (Fuel Trims, MAF, MAP, Readiness, Mode 06) und M272-spezifische Auswertung, sofern ECU unterstützt.
