@@ -1,10 +1,33 @@
 # ELM327 Android v1.0.9 → OpenNextion ESP32-S3: Feature-Portierung
 
 **Entwicklungsstand:** Phase 1 im isolierten Draft-Branch
-`feature/elm327-android-function-port-20261011`. Der bestehende
-Pi-Labortest der Basisfirmware ist bestätigt; **die neu portierten
-Funktionen sind noch nicht am Display oder an einem realen ELM327 geprüft**.
-Nicht für das Fahrzeug freigegeben.
+`feature/elm327-android-function-port-20261011`. **Die neu portierten
+Ansichten wurden am echten Display mit dem Pi-Simulator fotografisch bestätigt.**
+Weder echter ELM327 noch Fahrzeug wurden geprüft. Das ist **keine Freigabe
+für den Fahrzeugeinsatz**.
+
+## Hardware-Abnahme: Pi-Simulator → ESP32-S3 (LAB)
+
+Die folgenden Werte stammen aus Fotos des realen OpenNextion-Displays,
+nicht aus Messungen am Mercedes C350:
+
+| Bereich | Beobachtung | Laborurteil |
+| --- | --- | --- |
+| 15 Live-PIDs | 1234 rpm, 90 C, 0 km/h, Last 29,8 %, Drossel 12,5 %, MAF 5,00 g/s, MAP 40 kPa, Ansaugluft 30 C, STFT B1/B2 0 %, LTFT B1 7,8 %, LTFT B2 5,5 %, ECU 13,500 V, Soll-Lambda 1,000, Umgebungsdruck 101 kPa | Sichtbar plausibel, Laborwerte |
+| KOER | Bei simulierten 1234 rpm wird `KOER: Motor laeuft` angezeigt | Anzeige funktioniert; kein echter Motor beteiligt |
+| Mode 06 | Zylinder 1–6 mit Bank 1/2; EWMA 0 und aktueller Zyklus `--` | Korrekt kein aktueller Zähler erfunden |
+| HU/AU | Monitorstatus, 0 km mit MIL, 5 Warmläufe seit Reset, 300 km seit Reset, Freeze-DTC keiner, gespeicherte/pending/permanente Codes jeweils 0 | Basis-Readiness und Sequenz im LAB sichtbar |
+| INFO | `LAB-Simulator: ID bestaetigt`, 489 gesendete Befehle, 0 Timeouts und 0 Pufferfehler | Im Foto keine Transportfehler gemeldet |
+| Touch | Reiterwechsel und Testzähler bis 6 | Funktioniert |
+
+Die angezeigten Daten sind vollständig vom Labor-Simulator vorgegeben.
+Eine Labor-Anzeige, die `KOER` meldet, ist **kein Beleg für laufenden
+Fahrzeugmotor**. Mode 06 enthält aktuell nur den EWMA-Wert; `--`
+bei Zyklus bedeutet `nicht gemeldet`, nicht `null Aussetzer`.
+
+**Nachfolgecommit:** Kennzeichnet HU/AU, Mode 06 und serielle CSV-Ausgabe
+nun abhängig vom Build als Simulation bzw. echte Adapterquelle; dieser
+Text-Fix benötigt noch einen neuen Build und Displaytest.
 
 ## Gegenüberstellung
 
