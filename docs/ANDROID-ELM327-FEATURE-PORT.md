@@ -25,9 +25,20 @@ Eine Labor-Anzeige, die `KOER` meldet, ist **kein Beleg für laufenden
 Fahrzeugmotor**. Mode 06 enthält aktuell nur den EWMA-Wert; `--`
 bei Zyklus bedeutet `nicht gemeldet`, nicht `null Aussetzer`.
 
-**Nachfolgecommit:** Kennzeichnet HU/AU, Mode 06 und serielle CSV-Ausgabe
-nun abhängig vom Build als Simulation bzw. echte Adapterquelle; dieser
-Text-Fix benötigt noch einen neuen Build und Displaytest.
+**Nachfolgekorrekturen (Quellcode eingecheckt, Hardwaretest noch offen):**
+HU/AU-, Mode-06- und USB-CSV-Ausgaben unterscheiden LAB-Simulation von
+ECU-Lesedaten. Bei einem abgebrochenen TCP-Adapterkanal werden
+HU/AU- und Mode-06-Reports sowie DTC-Status ausdrücklich als
+**nicht mehr gültig** markiert; kein offener Scan wird nach einem
+Reconnect automatisch fortgesetzt. Fehlende Antworten auf bereits
+gelernte PIDs setzen den jeweiligen Messwert auf `--` statt einen
+veralteten Wert weiter anzuzeigen. Die INFO-Anzeige bezeichnet den
+kombinierten Zähler für fehlende/ungültige Antworten als
+**Antwortfehler** und nicht irreführend nur als Pufferfehler.
+
+Der neue Python-Integrationstest ist ein zusätzlicher Quellcode-Check,
+kein Hardware- oder Kommunikationsnachweis. Vor dem erneuten Flashen
+müssen CI und `bash scripts/pi/build.sh lab` erfolgreich sein.
 
 ## Gegenüberstellung
 
