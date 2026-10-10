@@ -200,13 +200,16 @@ static void buildUi() {
   label(pages[0], "LIVEWERTE", 12, 3, 290, CYAN);
   lv_obj_t *rpmCard = makeCard(pages[0], 12, 29, 296, 89);
   label(rpmCard, "MOTORDREHZAHL", 12, 12, 269, MUTED);
-  rpmText = label(rpmCard, "-- rpm", 12, 48, 269, LIGHT);
+  rpmText = label(rpmCard, "-- rpm", 12, 45, 269, LIGHT);
+  lv_obj_set_style_text_font(rpmText, &lv_font_montserrat_24, LV_PART_MAIN);
   lv_obj_t *tempCard = makeCard(pages[0], 12, 129, 142, 92);
   label(tempCard, "KUEHLMITTEL", 10, 11, 124, MUTED);
-  coolantText = label(tempCard, "-- C", 10, 51, 124, LIGHT);
+  coolantText = label(tempCard, "-- C", 10, 48, 124, LIGHT);
+  lv_obj_set_style_text_font(coolantText, &lv_font_montserrat_20, LV_PART_MAIN);
   lv_obj_t *speedCard = makeCard(pages[0], 166, 129, 142, 92);
   label(speedCard, "TEMPO", 10, 11, 124, MUTED);
-  speedText = label(speedCard, "-- km/h", 10, 51, 124, LIGHT);
+  speedText = label(speedCard, "-- km/h", 10, 48, 124, LIGHT);
+  lv_obj_set_style_text_font(speedText, &lv_font_montserrat_20, LV_PART_MAIN);
   label(pages[0], "Werte nur bei ECU-Unterstuetzung", 12, 254, 290, MUTED);
   label(pages[0], "Keine Codierung / keine DTC-Loeschung", 12, 285, 291, 0x53D7CF);
 
