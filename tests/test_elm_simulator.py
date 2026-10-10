@@ -1,5 +1,6 @@
 import importlib.util
 import pathlib
+import tempfile
 import unittest
 
 MODULE_FILE = pathlib.Path(__file__).resolve().parents[1] / "tools" / "elm327_lab_simulator.py"
@@ -26,6 +27,25 @@ class LabTest(unittest.TestCase):
         for cmd in ("04", "08", "14", "2E", "31", "2701", "ATSH7E0", "ATCRA7E8", "FF", ""):
             with self.subTest(cmd=cmd):
                 self.assertEqual(lab.answer_for(cmd), "?")
+    def test_pid_no_data_fault_does_not_disable_tcp_or_other_pids(self):
+        self.assertEqual(lab.answer_for("010C", "010C"), "NO DATA")
+        self.assertEqual(lab.answer_for("0105", "010C"), "41 05 82")
+        self.assertEqual(lab.answer_for("ATZ", "010C"), "ELM327 LAB SIM v0.1")
+        self.assertEqual(lab.answer_for("04", "010C"), "?")
+
+    def test_fault_file_hot_toggle_and_strict_allowlist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            filename = pathlib.Path(tmp) / "pid-fault"
+            self.assertIsNone(lab.fault_pid_from_file(str(filename)))
+            filename.write_text("010C\\n", encoding="ascii")
+            self.assertEqual(lab.fault_pid_from_file(str(filename)), "010C")
+            filename.write_text("04\\n", encoding="ascii")
+            self.assertIsNone(lab.fault_pid_from_file(str(filename)))
+            filename.write_text("01FF", encoding="ascii")
+            self.assertIsNone(lab.fault_pid_from_file(str(filename)))
+            filename.unlink()
+            self.assertIsNone(lab.fault_pid_from_file(str(filename)))
+
     def test_adapter_setup(self):
         self.assertEqual(lab.answer_for("ATSP0"), "OK")
         self.assertEqual(lab.answer_for("ATZ"), "ELM327 LAB SIM v0.1")
