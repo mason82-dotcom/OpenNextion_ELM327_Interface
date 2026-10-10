@@ -217,7 +217,13 @@ static void buildUi() {
   label(speedCard, "TEMPO", 10, 11, 124, MUTED);
   speedText = label(speedCard, "-- km/h", 10, 48, 124, LIGHT);
   lv_obj_set_style_text_font(speedText, &lv_font_montserrat_20, LV_PART_MAIN);
-  label(pages[0], "Werte nur bei ECU-Unterstuetzung", 12, 254, 290, MUTED);
+#if defined(OBD_LAB_BUILD)
+  label(pages[0], "LABOR: simulierte Werte, kein Fahrzeug", 12, 254, 290, MUTED);
+#elif OBD_CONNECTED_BUILD
+  label(pages[0], "Livewerte bei ECU-Unterstuetzung", 12, 254, 290, MUTED);
+#else
+  label(pages[0], "Offline: keine ECU-Messwerte", 12, 254, 290, MUTED);
+#endif
   label(pages[0], "Keine Codierung / keine DTC-Loeschung", 12, 285, 291, 0x53D7CF);
 
   // GRAPH: explicit dark LVGL chart styling (no white plot rectangle).
@@ -241,7 +247,13 @@ static void buildUi() {
   lv_obj_set_style_size(rpmChart, 0, LV_PART_INDICATOR);
   rpmSeries = lv_chart_add_series(rpmChart, lv_color_hex(0x53D7CF), LV_CHART_AXIS_PRIMARY_Y);
   for (int i = 0; i < 48; ++i) lv_chart_set_next_value(rpmChart, rpmSeries, 0);
+#if defined(OBD_LAB_BUILD)
+  label(pages[1], "LABOR: simulierte Werte / keine ECU-Daten", 12, 303, 290, MUTED);
+#elif OBD_CONNECTED_BUILD
+  label(pages[1], "Livewerte vom ELM327-Adapter", 12, 303, 290, MUTED);
+#else
   label(pages[1], "Offline: keine realen Messwerte", 12, 303, 290, MUTED);
+#endif
 
   // DTC: not sent on page switch; explicitly requested with button.
   label(pages[2], "FEHLERCODES / ROHDATEN", 12, 3, 291, CYAN);
@@ -334,9 +346,9 @@ static void markDisconnected(const char *reason) {
   rpm = -1; coolantC = -1000; speedKph = -1;
   lv_label_set_text(statusText, reason);
   lv_label_set_text(linkText, "ELM327: getrennt");
-  lv_label_set_text(rpmText, "Drehzahl: -- rpm");
-  lv_label_set_text(coolantText, "Kuehlmittel: -- C");
-  lv_label_set_text(speedText, "Geschwindigkeit: -- km/h");
+  lv_label_set_text(rpmText, "-- rpm");
+  lv_label_set_text(coolantText, "-- C");
+  lv_label_set_text(speedText, "-- km/h");
 }
 
 // Read-only PID parser uses bounded, line-aware frames from ObdResponseParser.h.
@@ -394,14 +406,14 @@ static void pollOnePid() {
   }
   if (idx == 0) {
     rpm = (256*(int)b[0] + b[1])/4;
-    lv_label_set_text_fmt(rpmText, "Drehzahl: %d rpm", rpm);
+    lv_label_set_text_fmt(rpmText, "%d rpm", rpm);
     lv_chart_set_next_value(rpmChart, rpmSeries, rpm);
   } else if (idx == 1) {
     coolantC = (int)b[0]-40;
-    lv_label_set_text_fmt(coolantText, "Kuehlmittel: %d C", coolantC);
+    lv_label_set_text_fmt(coolantText, "%d C", coolantC);
   } else {
     speedKph = b[0];
-    lv_label_set_text_fmt(speedText, "Geschwindigkeit: %d km/h", speedKph);
+    lv_label_set_text_fmt(speedText, "%d km/h", speedKph);
   }
   Serial.printf("SAMPLE,%lu,%d,%d,%d\n", (unsigned long)millis(), rpm, coolantC, speedKph);
 }
