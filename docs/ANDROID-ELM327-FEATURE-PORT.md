@@ -185,3 +185,28 @@ Andere einzelne Mode-01-PIDs, etwa `0105` oder `0107`, lassen sich
 entsprechend testen, sofern sie in der Simulator-Whitelist stehen.
 Bei diesem Test dürfen keine echten ELM327-Adapter oder Fahrzeuge
 angeschlossen sein.
+
+### Hardware-Ergebnis: Einzel-PID `NO DATA` – bestanden
+
+Der Anwender hat vier Displayfotos vom Test auf dem echten ESP32-S3
+bereitgestellt. Es handelt sich ausschließlich um Simulatorwerte:
+
+| Zustand | Sichtbares Ergebnis | Bewertung |
+| --- | --- | --- |
+| `010C` absichtlich `NO DATA` | `-- rpm` | Alter RPM-Wert ungültig gesetzt |
+| Während des PID-Fehlers | 90 C Kühlmittel und 0 km/h | Andere PIDs weiter verfügbar |
+| Während des PID-Fehlers | `LAB: Pi-Simulator verbunden` | TCP-Session bleibt bestehen |
+| INFO beim Fehler | 1.234 gesendete Befehle, 2 Timeouts, 8 Antwortfehler | Fehler gezählt; Timeouts kumuliert |
+| Fehler-Injektion entfernt | 1.234 rpm bei weiterhin bestehender Verbindung | Neuer gültiger Messwert automatisch übernommen |
+| INFO später | 1.319 gesendete Befehle, 2 Timeouts, 11 Antwortfehler | Antwortfehler steigen; Timeout-Zahl bleibt unverändert |
+
+Die Fotos bestätigen die lokale PID-Invalidierung und automatische
+Wiederaufnahme nach Rückkehr gültiger Antworten. Die sichtbaren
+Antwortfehler steigen um drei; die Anzahl an Timeouts bleibt konstant.
+Das ist eine gezielte Einzelantwort-Störung, **kein** Nachweis gegen
+sämtliche möglichen Adapterfehler, CAN-Header-/ISO-TP-Formate oder
+Fahrzeugsteuergeräte. Ein anschließender Reboot-/Langzeittest ist offen.
+
+Der Simulator besitzt keinerlei Verbindung zu einem Fahrzeug; seine
+Antworten dürfen nicht als reale Diagnosewerte interpretiert werden.
+
