@@ -12,6 +12,7 @@
 #include <lvgl.h>
 #include "BoardConfig.h"
 #include "ReadOnlyPolicy.h"
+#include "ObdResponseParser.h"
 
 #if __has_include("Config.h")
 #include "Config.h"
@@ -309,7 +310,8 @@ static bool transact(Command command, String &answer, uint32_t timeoutMs = CMD_T
         adapter.stop();
         return false;
       }
-      if (c >= 32 && c <= 126) answer += c;
+      if (c == '\r' || c == '\n') answer += '\n';
+      else if (c >= 32 && c <= 126) answer += c;
     }
     if (!adapter.connected()) break;
     delay(2);
@@ -331,31 +333,7 @@ static void markDisconnected(const char *reason) {
   lv_label_set_text(speedText, "Geschwindigkeit: -- km/h");
 }
 
-// Find strictly matching Mode 01/PID response within compact hex bytes.
-// Tolerates ELM spaces/line breaks, but rejects malformed/incomplete payloads.
-static bool pidBytes(const String &response, uint8_t pid, uint8_t *bytes, int count) {
-  String compact;
-  compact.reserve(response.length());
-  for (unsigned i=0; i<response.length(); ++i) {
-    char c = response[i];
-    if (c >= 'a' && c <= 'f') c -= 32;
-    if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F')) compact += c;
-  }
-  char signature[5];
-  snprintf(signature, sizeof(signature), "41%02X", pid);
-  int pos = compact.indexOf(signature);
-  if (pos < 0 || (unsigned)(pos + 4 + count*2) > compact.length()) return false;
-  for (int i=0; i<count; ++i) {
-    auto nibble = [](char h)->uint8_t {
-      return (h >= 'A') ? (uint8_t)(h - 'A' + 10) : (uint8_t)(h - '0');
-    };
-    char a = compact[pos + 4 + i*2], b = compact[pos + 5 + i*2];
-    if (!isxdigit((unsigned char)a) || !isxdigit((unsigned char)b)) return false;
-    bytes[i] = (uint8_t)((nibble(a) << 4) | nibble(b));
-  }
-  return true;
-}
-
+// Read-only PID parser uses bounded, line-aware frames from ObdResponseParser.h.
 static bool pidSupported(uint8_t pid) {
   if (pid < 1 || pid > 0x20) return false;
   return (pidMask & (1UL << (0x20 - pid))) != 0;
@@ -373,10 +351,7 @@ static bool initAdapter() {
     if (response.indexOf('?') >= 0 || response.indexOf("ERROR") >= 0) return false;
   }
   if (!transact(Command::SupportedPids00, response, 3000)) return false;
-  uint8_t mask[4];
-  if (!pidBytes(response, 0x00, mask, 4)) return false;
-  pidMask = ((uint32_t)mask[0] << 24) | ((uint32_t)mask[1] << 16)
-          | ((uint32_t)mask[2] << 8) | mask[3];
+  if (!obd_response::supportedPids00(response.c_str(), pidMask)) return false;
   adapterReady = true;
   lv_label_set_text(statusText, "ELM327 verbunden | Mode 01 aktiv");
   lv_label_set_text(linkText, "WLAN / ELM327: verbunden");
@@ -392,7 +367,10 @@ static void pollOnePid() {
   String response;
   if (!transact(commands[idx], response)) { markDisconnected("ELM327: Timeout/Sync-Verlust"); return; }
   uint8_t b[2];
-  if (!pidBytes(response, pids[idx], b, idx == 0 ? 2 : 1)) return;
+  if (!obd_response::readPid(response.c_str(), pids[idx], b, idx == 0 ? 2 : 1)) {
+    ++inputErrorCount;  // A reply with a prompt but no matching PID is unavailable, never zero.
+    return;
+  }
   if (idx == 0) {
     rpm = (256*(int)b[0] + b[1])/4;
     lv_label_set_text_fmt(rpmText, "Drehzahl: %d rpm", rpm);
