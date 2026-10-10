@@ -1,0 +1,347 @@
+/* OpenNextion OBD Display v0.1; NO ECU write, clear or actuator commands.
+ * Default build: offline LCD+touch demo; only local Config.h enables WiFi.
+ */
+#include <Arduino.h>
+#include <Wire.h>
+#include <SPI.h>
+#include <WiFi.h>
+#include <Arduino_GFX_Library.h>
+#include <Adafruit_CST8XX.h>
+#include <Adafruit_PCF8574.h>
+#define LV_CONF_SKIP
+#include <lvgl.h>
+#include "BoardConfig.h"
+#include "ReadOnlyPolicy.h"
+
+#if __has_include("Config.h")
+#include "Config.h"
+#define OBD_CONNECTED_BUILD 1
+#else
+#define OBD_CONNECTED_BUILD 0
+#endif
+
+#if OBD_CONNECTED_BUILD
+#if !defined(ELM_WIFI_SSID) || !defined(ELM_WIFI_PASSWORD) || !defined(ELM_HOST) || !defined(ELM_PORT)
+#error "Config.h must define all ELM_* settings."
+#endif
+#endif
+
+using obd_policy::Command;
+static constexpr uint32_t LCD_SPI_HZ = 80000000;
+static constexpr uint32_t WIFI_RETRY_MS = 12000;
+static constexpr uint32_t POLL_INTERVAL_MS = 500;
+static constexpr uint16_t BUF_LINES = 40;
+static constexpr uint32_t CMD_TIMEOUT_MS = 1700;
+
+Arduino_DataBus *bus = new Arduino_HWSPI(
+    LCD_DC_PIN, LCD_CS_PIN, LCD_SCLK_PIN, LCD_MOSI_PIN, LCD_MISO_PIN, &SPI, true);
+Arduino_GFX *gfx = new Arduino_ST7796(
+    bus, GFX_NOT_DEFINED, 0, false, LCD_H_RES, LCD_V_RES);
+Adafruit_CST8XX touch;
+Adafruit_PCF8574 expander;
+static lv_color_t displayPixels[LCD_H_RES * BUF_LINES];
+static lv_disp_draw_buf_t drawBuffer;
+static lv_disp_drv_t dispDriver;
+static lv_obj_t *statusText, *rpmText, *coolantText, *speedText, *scanText, *touchText;
+static lv_obj_t *rpmChart;
+static lv_chart_series_t *rpmSeries;
+static uint32_t tapCount = 0;
+
+#if OBD_CONNECTED_BUILD
+static WiFiClient adapter;
+static uint32_t lastAttempt = 0, lastPoll = 0;
+static bool adapterReady = false, dtcScanRequested = false;
+static int rpm = -1, coolantC = -1000, speedKph = -1;
+static uint32_t pidMask = 0;
+static uint8_t pollIndex = 0, dtcIndex = 0;
+#endif
+
+static void resetPanel() {
+  if (!expander.begin(PCF8574_ADDR, &Wire)) {
+    Serial.println("WARN: LCD reset expander missing");
+    return;
+  }
+  expander.digitalWriteByte(0xFF);
+  delay(20);
+  expander.digitalWriteByte((uint8_t)(0xFF & ~(1U << PCF8574_PIN_LCD_RST)));
+  delay(120);
+  expander.digitalWriteByte(0xFF);
+  delay(120);
+}
+
+static void displayFlush(lv_disp_drv_t *driver, const lv_area_t *area, lv_color_t *pixels) {
+  uint32_t w = area->x2 - area->x1 + 1;
+  uint32_t h = area->y2 - area->y1 + 1;
+#if LV_COLOR_16_SWAP != 0
+  gfx->draw16bitBeRGBBitmap(area->x1, area->y1, (uint16_t *)&pixels->full, w, h);
+#else
+  gfx->draw16bitRGBBitmap(area->x1, area->y1, (uint16_t *)&pixels->full, w, h);
+#endif
+  lv_disp_flush_ready(driver);
+}
+
+static void touchRead(lv_indev_drv_t*, lv_indev_data_t *data) {
+  static int16_t x = 0, y = 0;
+  if (touch.touched()) {
+    auto p = touch.getPoint();
+    x = constrain(p.x, 0, (int16_t)gfx->width() - 1);
+    y = constrain(p.y, 0, (int16_t)gfx->height() - 1);
+    data->state = LV_INDEV_STATE_PR;
+  } else {
+    data->state = LV_INDEV_STATE_REL;
+  }
+  data->point.x = x;
+  data->point.y = y;
+}
+
+static lv_obj_t* label(lv_obj_t *parent, const char *initial, int x, int y, int width, uint32_t color) {
+  lv_obj_t *obj = lv_label_create(parent);
+  lv_obj_set_pos(obj, x, y);
+  lv_obj_set_width(obj, width);
+  lv_obj_set_style_text_color(obj, lv_color_hex(color), 0);
+  lv_label_set_long_mode(obj, LV_LABEL_LONG_WRAP);
+  lv_label_set_text(obj, initial);
+  return obj;
+}
+
+static void onTouchButton(lv_event_t *event) {
+  if (lv_event_get_code(event) != LV_EVENT_CLICKED) return;
+  tapCount++;
+  lv_label_set_text_fmt(touchText, "Touch: %lu", (unsigned long)tapCount);
+#if OBD_CONNECTED_BUILD
+  dtcScanRequested = true;
+  dtcIndex = 0;
+  lv_label_set_text(scanText, "DTC-Abfrage angefordert...");
+#endif
+}
+
+static void buildUi() {
+  lv_obj_t *screen = lv_scr_act();
+  lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_style_bg_color(screen, lv_color_hex(0x0e1727), 0);
+  lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
+  label(screen, "OBD DIAG  |  READ-ONLY", 12, 11, 298, 0x87cdff);
+  statusText = label(screen, "Initialisierung", 12, 49, 297, 0xc9daec);
+  rpmText = label(screen, "Drehzahl: -- rpm", 12, 110, 296, 0xffffff);
+  coolantText = label(screen, "Kuehlmittel: -- C", 12, 143, 296, 0xffffff);
+  speedText = label(screen, "Geschwindigkeit: -- km/h", 12, 176, 296, 0xffffff);
+  label(screen, "Drehzahlverlauf", 12, 220, 296, 0x88caff);
+  rpmChart = lv_chart_create(screen);
+  lv_obj_set_size(rpmChart, 288, 103);
+  lv_obj_set_pos(rpmChart, 12, 247);
+  lv_chart_set_type(rpmChart, LV_CHART_TYPE_LINE);
+  lv_chart_set_point_count(rpmChart, 36);
+  lv_chart_set_range(rpmChart, LV_CHART_AXIS_PRIMARY_Y, 0, 7000);
+  rpmSeries = lv_chart_add_series(rpmChart, lv_palette_main(LV_PALETTE_BLUE), LV_CHART_AXIS_PRIMARY_Y);
+  for (int i=0; i<36; ++i) lv_chart_set_next_value(rpmChart, rpmSeries, 0);
+  scanText = label(screen, "DTC: noch nicht gelesen", 12, 358, 296, 0xd3e3f4);
+  lv_obj_t *button = lv_btn_create(screen);
+  lv_obj_set_size(button, 146, 40);
+  lv_obj_set_pos(button, 12, 412);
+  lv_obj_add_event_cb(button, onTouchButton, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *buttonText = lv_label_create(button);
+#if OBD_CONNECTED_BUILD
+  lv_label_set_text(buttonText, "DTC lesen");
+#else
+  lv_label_set_text(buttonText, "Touch testen");
+#endif
+  lv_obj_center(buttonText);
+  touchText = label(screen, "Touch: 0", 172, 422, 138, 0xa9bacb);
+}
+
+static void uiTick() {
+  static uint32_t lastTick = millis();
+  uint32_t now = millis();
+  lv_tick_inc(now - lastTick);
+  lastTick = now;
+  lv_timer_handler();
+}
+
+#if OBD_CONNECTED_BUILD
+// Sole TCP transmit path. A raw string cannot reach the adapter.
+static bool transact(Command command, String &answer, uint32_t timeoutMs = CMD_TIMEOUT_MS) {
+  const char *wire = obd_policy::wireCommand(command);
+  if (!adapter.connected() || wire == nullptr) return false;
+  adapter.print(wire);
+  adapter.write('\r');
+  answer = "";
+  uint32_t start = millis();
+  while (millis() - start < timeoutMs) {
+    uiTick();
+    while (adapter.available()) {
+      char c = (char)adapter.read();
+      if (c == '>') return true;
+      if (answer.length() >= 1024) { adapter.stop(); return false; }
+      if (c >= 32 && c <= 126) answer += c;
+    }
+    if (!adapter.connected()) break;
+    delay(2);
+  }
+  // Missing prompt = unsynchronized stream. NEVER send next command on it.
+  adapter.stop();
+  return false;
+}
+
+static void markDisconnected(const char *reason) {
+  adapterReady = false;
+  pidMask = 0;
+  rpm = -1; coolantC = -1000; speedKph = -1;
+  lv_label_set_text(statusText, reason);
+  lv_label_set_text(rpmText, "Drehzahl: -- rpm");
+  lv_label_set_text(coolantText, "Kuehlmittel: -- C");
+  lv_label_set_text(speedText, "Geschwindigkeit: -- km/h");
+}
+
+// Find strictly matching Mode 01/PID response within compact hex bytes.
+// Tolerates ELM spaces/line breaks, but rejects malformed/incomplete payloads.
+static bool pidBytes(const String &response, uint8_t pid, uint8_t *bytes, int count) {
+  String compact;
+  compact.reserve(response.length());
+  for (unsigned i=0; i<response.length(); ++i) {
+    char c = response[i];
+    if (c >= 'a' && c <= 'f') c -= 32;
+    if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F')) compact += c;
+  }
+  char signature[5];
+  snprintf(signature, sizeof(signature), "41%02X", pid);
+  int pos = compact.indexOf(signature);
+  if (pos < 0 || (unsigned)(pos + 4 + count*2) > compact.length()) return false;
+  for (int i=0; i<count; ++i) {
+    auto nibble = [](char h)->uint8_t {
+      return (h >= 'A') ? (uint8_t)(h - 'A' + 10) : (uint8_t)(h - '0');
+    };
+    char a = compact[pos + 4 + i*2], b = compact[pos + 5 + i*2];
+    if (!isxdigit((unsigned char)a) || !isxdigit((unsigned char)b)) return false;
+    bytes[i] = (uint8_t)((nibble(a) << 4) | nibble(b));
+  }
+  return true;
+}
+
+static bool pidSupported(uint8_t pid) {
+  if (pid < 1 || pid > 0x20) return false;
+  return (pidMask & (1UL << (0x20 - pid))) != 0;
+}
+
+static bool initAdapter() {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  if (!adapter.connect(ELM_HOST, ELM_PORT, 1800)) return false;
+  const Command setup[] = {
+      Command::AdapterReset, Command::AdapterEchoOff, Command::AdapterLinesOff,
+      Command::AdapterSpacesOff, Command::AdapterHeadersOff, Command::AdapterAutoProtocol};
+  String response;
+  for (Command c : setup) {
+    if (!transact(c, response, c == Command::AdapterReset ? 3500 : 1700)) return false;
+    if (response.indexOf('?') >= 0 || response.indexOf("ERROR") >= 0) return false;
+  }
+  if (!transact(Command::SupportedPids00, response, 3000)) return false;
+  uint8_t mask[4];
+  if (!pidBytes(response, 0x00, mask, 4)) return false;
+  pidMask = ((uint32_t)mask[0] << 24) | ((uint32_t)mask[1] << 16)
+          | ((uint32_t)mask[2] << 8) | mask[3];
+  adapterReady = true;
+  lv_label_set_text(statusText, "ELM327 verbunden | Mode 01 aktiv");
+  Serial.printf("OBD: Supported PIDs bitmap=0x%08lX\n", (unsigned long)pidMask);
+  return true;
+}
+
+static void pollOnePid() {
+  const Command commands[] = {Command::Rpm, Command::Coolant, Command::Speed};
+  const uint8_t pids[] = {0x0C, 0x05, 0x0D};
+  uint8_t idx = pollIndex++ % 3;
+  if (!pidSupported(pids[idx])) return;
+  String response;
+  if (!transact(commands[idx], response)) { markDisconnected("ELM327: Timeout/Sync-Verlust"); return; }
+  uint8_t b[2];
+  if (!pidBytes(response, pids[idx], b, idx == 0 ? 2 : 1)) return;
+  if (idx == 0) {
+    rpm = (256*(int)b[0] + b[1])/4;
+    lv_label_set_text_fmt(rpmText, "Drehzahl: %d rpm", rpm);
+    lv_chart_set_next_value(rpmChart, rpmSeries, rpm);
+  } else if (idx == 1) {
+    coolantC = (int)b[0]-40;
+    lv_label_set_text_fmt(coolantText, "Kuehlmittel: %d C", coolantC);
+  } else {
+    speedKph = b[0];
+    lv_label_set_text_fmt(speedText, "Geschwindigkeit: %d km/h", speedKph);
+  }
+  Serial.printf("SAMPLE,%lu,%d,%d,%d\n", (unsigned long)millis(), rpm, coolantC, speedKph);
+}
+
+static void scanOneDtcMode() {
+  const Command modes[] = {Command::StoredDtcs, Command::PendingDtcs, Command::PermanentDtcs};
+  const char *names[] = {"03 gespeichert", "07 ausstehend", "0A permanent"};
+  if (dtcIndex >= 3) { dtcScanRequested = false; return; }
+  String answer;
+  if (!transact(modes[dtcIndex], answer, 3500)) {
+    markDisconnected("DTC: Timeout/Sync-Verlust");
+    dtcScanRequested = false; return;
+  }
+  // Raw result, deliberately not parsed as trustworthy ECU error codes yet.
+  Serial.printf("DTC_RAW,%s,%s\n", names[dtcIndex], answer.c_str());
+  String preview = answer.substring(0, 46);
+  lv_label_set_text_fmt(scanText, "DTC %s: %s", names[dtcIndex], preview.c_str());
+  ++dtcIndex;
+  if (dtcIndex == 3) dtcScanRequested = false;
+}
+#endif // OBD_CONNECTED_BUILD
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(NEXTION_IIC_SDA_PIN, NEXTION_IIC_SCL_PIN, 400000);
+  resetPanel();
+  gfx->begin(LCD_SPI_HZ);
+  gfx->setRotation(0);
+  gfx->fillScreen(RGB565_BLACK);
+  pinMode(LCD_BL_PIN, OUTPUT);
+  digitalWrite(LCD_BL_PIN, HIGH);
+  if (!touch.begin(&Wire, CST826_ADDR)) Serial.println("WARN: Touch not initialized");
+  lv_init();
+  lv_disp_draw_buf_init(&drawBuffer, displayPixels, nullptr, LCD_H_RES*BUF_LINES);
+  lv_disp_drv_init(&dispDriver);
+  dispDriver.hor_res = gfx->width();
+  dispDriver.ver_res = gfx->height();
+  dispDriver.draw_buf = &drawBuffer;
+  dispDriver.flush_cb = displayFlush;
+  lv_disp_drv_register(&dispDriver);
+  static lv_indev_drv_t indev;
+  lv_indev_drv_init(&indev);
+  indev.type = LV_INDEV_TYPE_POINTER;
+  indev.read_cb = touchRead;
+  lv_indev_drv_register(&indev);
+  buildUi();
+#if OBD_CONNECTED_BUILD
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ELM_WIFI_SSID, ELM_WIFI_PASSWORD);
+  lastAttempt = millis();
+  lv_label_set_text(statusText, "WLAN zum ELM327 startet...");
+  Serial.println("OBD DIAG: CONNECTED BUILD; READ-ONLY COMMAND POLICY");
+#else
+  lv_label_set_text(statusText, "OFFLINE-TEST | WLAN und OBD AUS");
+  lv_label_set_text(scanText, "Keine Diagnose-Anfragen aktiv");
+  Serial.println("OBD DIAG: OFFLINE DEMO; NO WIFI, NO VEHICLE COMMANDS");
+#endif
+}
+
+void loop() {
+  uiTick();
+#if OBD_CONNECTED_BUILD
+  uint32_t now = millis();
+  if (!adapterReady && (now - lastAttempt >= WIFI_RETRY_MS || lastAttempt == 0)) {
+    lastAttempt = now;
+    adapter.stop();
+    if (WiFi.status() != WL_CONNECTED) {
+      WiFi.reconnect();
+      lv_label_set_text(statusText, "WLAN getrennt – Reconnect");
+    } else if (!initAdapter()) {
+      adapter.stop();
+      markDisconnected("ELM327/ECU nicht erreichbar");
+    }
+  }
+  if (adapterReady && now - lastPoll >= POLL_INTERVAL_MS) {
+    lastPoll = now;
+    if (dtcScanRequested) scanOneDtcMode();
+    else pollOnePid();
+  }
+#endif
+  delay(5);
+}

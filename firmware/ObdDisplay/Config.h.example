@@ -1,0 +1,7 @@
+#pragma once
+// LAB / VEHICLE USE ONLY AFTER OFFLINE DISPLAY AND READ-ONLY GATE CHECK.
+// Copy to Config.h locally; NEVER commit the resulting file.
+#define ELM_WIFI_SSID "YOUR_ELM327_WIFI_SSID"
+#define ELM_WIFI_PASSWORD ""
+#define ELM_HOST "192.168.0.10"
+#define ELM_PORT 35000
