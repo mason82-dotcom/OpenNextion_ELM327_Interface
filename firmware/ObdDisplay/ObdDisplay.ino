@@ -13,6 +13,8 @@
 #include "BoardConfig.h"
 #include "ReadOnlyPolicy.h"
 #include "ObdResponseParser.h"
+#include "ObdPidCatalog.h"
+#include "ObdDiagnostics.h"
 
 #if defined(OBD_LAB_BUILD)
 #if __has_include("Config.h")
@@ -52,7 +54,8 @@ static lv_disp_drv_t dispDriver;
 static lv_obj_t *statusText, *rpmText, *coolantText, *speedText, *scanText, *touchText;
 static lv_obj_t *rpmChart;
 static lv_chart_series_t *rpmSeries;
-static lv_obj_t *pages[4], *navButtons[4], *linkText, *statsText;
+static lv_obj_t *pages[7], *navButtons[4], *linkText, *statsText;
+static lv_obj_t *extraDataText, *engineStateText, *inspectionText, *misfireText;
 static lv_obj_t *dtcModeText[3];
 static uint32_t tapCount = 0;
 
@@ -61,8 +64,16 @@ static WiFiClient adapter;
 static uint32_t lastAttempt = 0, lastPoll = 0;
 static bool adapterReady = false, dtcScanRequested = false;
 static int rpm = -1, coolantC = -1000, speedKph = -1;
-static uint32_t pidMask = 0;
-static uint8_t pollIndex = 0, dtcIndex = 0;
+static uint32_t pidMasks[3] = {0, 0, 0};
+static obd_pids::Scheduler pollScheduler;
+static double pidValues[obd_pids::count] = {};
+static bool pidValid[obd_pids::count] = {};
+static uint32_t lastExtraRefresh = 0;
+static obd_diag::DtcEncoding dtcEncoding = obd_diag::DtcEncoding::Unknown;
+static bool inspectionRequested = false, misfireRequested = false;
+static uint8_t inspectionStep = 0, misfireStep = 0;
+static String inspectionReport, misfireReport;
+static uint8_t dtcIndex = 0;
 static uint32_t txCount = 0, timeoutCount = 0, inputErrorCount = 0;
 #endif
 
@@ -149,10 +160,11 @@ static lv_obj_t* makeButton(lv_obj_t *parent, const char *title, int x, int y,
 }
 
 static void showPage(uint8_t page) {
-  if (page >= 4) return;
-  for (uint8_t i = 0; i < 4; ++i) {
+  if (page >= 7) return;
+  for (uint8_t i = 0; i < 7; ++i) {
     if (i == page) lv_obj_clear_flag(pages[i], LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(pages[i], LV_OBJ_FLAG_HIDDEN);
+    if (i >= 4) continue;
     lv_obj_set_style_bg_color(navButtons[i],
       lv_color_hex(i == page ? 0x225889 : 0x17283D), LV_PART_MAIN);
     lv_obj_set_style_border_width(navButtons[i], i == page ? 1 : 0, LV_PART_MAIN);
@@ -194,7 +206,7 @@ static void buildUi() {
 
   label(screen, "OBD DIAG  /  READ-ONLY", 11, 11, 295, CYAN);
   statusText = label(screen, "Initialisierung...", 11, 38, 296, MUTED);
-  for (uint8_t i = 0; i < 4; ++i) {
+  for (uint8_t i = 0; i < 7; ++i) {
     pages[i] = lv_obj_create(screen);
     lv_obj_set_pos(pages[i], 0, 74);
     lv_obj_set_size(pages[i], 320, 349);
@@ -342,8 +354,15 @@ static bool transact(Command command, String &answer, uint32_t timeoutMs = CMD_T
 
 static void markDisconnected(const char *reason) {
   adapterReady = false;
-  pidMask = 0;
+  pidMasks[0] = pidMasks[1] = pidMasks[2] = 0;
+  pollScheduler.reset();
+  for (std::size_t i=0;i<obd_pids::count;++i) pidValid[i]=false;
   rpm = -1; coolantC = -1000; speedKph = -1;
+  dtcEncoding = obd_diag::DtcEncoding::Unknown;
+  inspectionRequested = false;
+  misfireRequested = false;
+  if (extraDataText) lv_label_set_text(extraDataText, "Keine Verbindung");
+  if (engineStateText) lv_label_set_text(engineStateText, "Betriebszustand: unbekannt");
   lv_label_set_text(statusText, reason);
   lv_label_set_text(linkText, "ELM327: getrennt");
   lv_label_set_text(rpmText, "-- rpm");
@@ -351,10 +370,8 @@ static void markDisconnected(const char *reason) {
   lv_label_set_text(speedText, "-- km/h");
 }
 
-// Read-only PID parser uses bounded, line-aware frames from ObdResponseParser.h.
 static bool pidSupported(uint8_t pid) {
-  if (pid < 1 || pid > 0x20) return false;
-  return (pidMask & (1UL << (0x20 - pid))) != 0;
+  return obd_pids::supported(pid, pidMasks);
 }
 
 static bool initAdapter() {
@@ -378,8 +395,30 @@ static bool initAdapter() {
     }
 #endif
   }
+  if (!transact(Command::AdapterProtocolId, response, 1700)) return false;
+  String proto = response;
+  proto.trim();
+  if (proto.startsWith("A") && proto.length() == 2) proto.remove(0,1);
+  if (proto.length() == 1 && proto[0]>='6' && proto[0]<='9')
+    dtcEncoding = obd_diag::DtcEncoding::Can;
+  else if (proto.length() == 1 && proto[0]>='1' && proto[0]<='5')
+    dtcEncoding = obd_diag::DtcEncoding::Legacy;
+  else dtcEncoding = obd_diag::DtcEncoding::Unknown;
   if (!transact(Command::SupportedPids00, response, 3000)) return false;
-  if (!obd_response::supportedPids00(response.c_str(), pidMask)) return false;
+  if (!obd_response::supportedBitmap(response.c_str(), 0x00, pidMasks[0])) return false;
+  pidMasks[1] = pidMasks[2] = 0;
+  if (pidMasks[0] & 1) {
+    if (transact(Command::SupportedPids20, response, 3000)) {
+      (void)obd_response::supportedBitmap(response.c_str(), 0x20, pidMasks[1]);
+    } else return false;
+    if (pidMasks[1] & 1) {
+      if (transact(Command::SupportedPids40, response, 3000)) {
+        (void)obd_response::supportedBitmap(response.c_str(), 0x40, pidMasks[2]);
+      } else return false;
+    }
+  }
+  pollScheduler.reset();
+  for (std::size_t i=0;i<obd_pids::count;++i) pidValid[i]=false;
   adapterReady = true;
 #if defined(OBD_LAB_BUILD)
   lv_label_set_text(statusText, "LAB: Pi-Simulator verbunden");
@@ -388,34 +427,73 @@ static bool initAdapter() {
   lv_label_set_text(statusText, "ELM327 verbunden | Mode 01 aktiv");
   lv_label_set_text(linkText, "WLAN / ELM327: verbunden");
 #endif
-  Serial.printf("OBD: Supported PIDs bitmap=0x%08lX\n", (unsigned long)pidMask);
+  Serial.printf("OBD: PIDs 00=%08lX 20=%08lX 40=%08lX CAN=%d\n",
+       (unsigned long)pidMasks[0],(unsigned long)pidMasks[1],
+       (unsigned long)pidMasks[2],dtcEncoding==obd_diag::DtcEncoding::Can);
+  Serial.println("CSV,millis,pid,label,value,unit,latency_ms");
   return true;
 }
 
+static void updateExtraData() {
+  if (!extraDataText) return;
+  String summary;
+  summary.reserve(1024);
+  for (std::size_t i=0;i<obd_pids::count;++i) {
+    const auto &p=obd_pids::catalog[i];
+    summary += p.title;
+    summary += ": ";
+    if (!pidSupported(p.pid)) summary += "n/v";
+    else if (!pidValid[i]) summary += "--";
+    else summary += String(pidValues[i], p.decimals);
+    if (pidValid[i]) {
+      summary += " ";
+      summary += p.unit;
+    }
+    summary += "\n";
+  }
+  lv_label_set_text(extraDataText, summary.c_str());
+}
 static void pollOnePid() {
-  const Command commands[] = {Command::Rpm, Command::Coolant, Command::Speed};
-  const uint8_t pids[] = {0x0C, 0x05, 0x0D};
-  uint8_t idx = pollIndex++ % 3;
-  if (!pidSupported(pids[idx])) return;
+  const int index = pollScheduler.choose(millis(), pidMasks);
+  if (index < 0) return;
+  const auto &p = obd_pids::catalog[index];
   String response;
-  if (!transact(commands[idx], response)) { markDisconnected("ELM327: Timeout/Sync-Verlust"); return; }
-  uint8_t b[2];
-  if (!obd_response::readPid(response.c_str(), pids[idx], b, idx == 0 ? 2 : 1)) {
-    ++inputErrorCount;  // A reply with a prompt but no matching PID is unavailable, never zero.
+  const uint32_t started=millis();
+  if (!transact(p.command, response)) {
+    markDisconnected("ELM327: Timeout/Sync-Verlust"); return;
+  }
+  uint8_t bytes[2];
+  if (!obd_response::readPid(response.c_str(), p.pid, bytes,
+                             obd_pids::bytesNeeded(p.formula))) {
+    ++inputErrorCount;
+    return; // no substitute zero or stale value
+  }
+  double value;
+  if (!obd_pids::decode(p, bytes, obd_pids::bytesNeeded(p.formula), value))
     return;
+  pidValues[index]=value;
+  pidValid[index]=true;
+  if (p.pid==0x0C) {
+    rpm=(int)value;
+    lv_label_set_text_fmt(rpmText,"%d rpm",rpm);
+    lv_chart_set_next_value(rpmChart,rpmSeries,rpm);
+    if (engineStateText)
+      lv_label_set_text(engineStateText,
+        rpm==0 ? "KOEO: Zuendung EIN / Motor AUS; Trimwerte bedingt aussagekraeftig"
+               : "KOER: Motor laeuft");
+  } else if (p.pid==0x05) {
+    coolantC=(int)value;
+    lv_label_set_text_fmt(coolantText,"%d C",coolantC);
+  } else if (p.pid==0x0D) {
+    speedKph=(int)value;
+    lv_label_set_text_fmt(speedText,"%d km/h",speedKph);
   }
-  if (idx == 0) {
-    rpm = (256*(int)b[0] + b[1])/4;
-    lv_label_set_text_fmt(rpmText, "%d rpm", rpm);
-    lv_chart_set_next_value(rpmChart, rpmSeries, rpm);
-  } else if (idx == 1) {
-    coolantC = (int)b[0]-40;
-    lv_label_set_text_fmt(coolantText, "%d C", coolantC);
-  } else {
-    speedKph = b[0];
-    lv_label_set_text_fmt(speedText, "%d km/h", speedKph);
+  Serial.printf("CSV,%lu,01%02X,%s,%.*f,%s,%lu\n",
+      (unsigned long)millis(),p.pid,p.title,p.decimals,value,p.unit,
+      (unsigned long)(millis()-started));
+  if (millis()-lastExtraRefresh >= 500) {
+    updateExtraData(); lastExtraRefresh=millis();
   }
-  Serial.printf("SAMPLE,%lu,%d,%d,%d\n", (unsigned long)millis(), rpm, coolantC, speedKph);
 }
 
 static void scanOneDtcMode() {
