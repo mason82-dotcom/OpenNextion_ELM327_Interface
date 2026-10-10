@@ -30,11 +30,24 @@ Keine Verantwortung für abweichendes Verhalten fehlerhafter ELM327-Klone oder n
 - Quellcode: `firmware/ObdDisplay/ObdDisplay.ino`.
 - Standardadresse des zuvor verwendeten ELM327-WLAN-Dongles: `192.168.0.10:35000`. WLAN-SSID und tatsächliche Adapteradresse können abweichen.
 
-Offline-Test (keine Konfiguration erstellen):
+### Auf Raspberry Pi 5 bauen (ohne Flashen)
+
+Der sichere **Offline-Build** hat keine `Config.h`, startet daher weder WLAN noch OBD-Kommunikation. Die LVGL-Konfigurationsflags werden durch das Buildskript auch an die C-Quelldateien der Bibliothek übergeben; ohne diese Flags schlägt LVGL 8.3.11 beim Arduino-CLI-Build fehl.
 
 ```bash
-arduino-cli compile --fqbn 'esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=app3M_fat9M_16MB' firmware/ObdDisplay
+# In ~/Projekte/OpenNextion_ELM327_Interface, auf Entwicklungsbranch:
+bash scripts/pi/doctor.sh
+bash scripts/pi/build.sh offline
 ```
+
+Wenn die Arduino-CLI fehlt: `bash scripts/pi/install-arduino-cli.sh`.
+Wenn ESP32-Core bzw. Bibliotheken fehlen: `bash scripts/pi/setup-toolchain.sh`.
+Diese zwei Schritte installieren Pakete **nur im Benutzerprofil** (großer Download). Der eigentliche Build erzeugt keine Systemänderungen außer Artefakten im lokalen `build/`-Ordner.
+
+Buildausgaben: `build/firmware-offline/` und `build/logs/firmware-offline-build.log`.
+Zum reinen Kompilieren des vernetzten Firmwarezweigs erst eine **lokale, git-ignorierte** `firmware/ObdDisplay/Config.h` anlegen und anschließend `bash scripts/pi/build.sh connected` ausführen. **Keiner** dieser Befehle flasht das Board oder öffnet eine ELM327-Verbindung.
+
+**Wichtig:** Der Offline- und Connected-Build werden zusätzlich in GitHub Actions kompiliert. Ein erfolgreicher Build ersetzt keinen Hardwaretest.
 
 Erst nach erfolgreich bestandenem Offline-Test für den verbundenen *Laborbetrieb* `firmware/ObdDisplay/Config.h.example` nach `Config.h` kopieren und SSID, Passwort und Adapteradresse lokal anpassen. `Config.h` ist von Git ausgenommen. Es existiert **kein automatischer Upload/Flash-Vorgang** in CI.
 

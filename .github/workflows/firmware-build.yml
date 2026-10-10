@@ -26,16 +26,16 @@ jobs:
           arduino-cli core install esp32:esp32@3.3.2 --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
       - name: Install display libraries
         run: |
-          arduino-cli lib install "GFX Library for Arduino"
-          arduino-cli lib install "Adafruit CST8XX Library"
-          arduino-cli lib install "Adafruit PCF8574"
+          arduino-cli lib install "GFX Library for Arduino@1.6.9"
+          arduino-cli lib install "Adafruit CST8XX Library@1.1.1"
+          arduino-cli lib install "Adafruit PCF8574@1.1.2"
           arduino-cli lib install "lvgl@8.3.11"
       - name: Offline display build (no WLAN)
         run: |
           test ! -f firmware/ObdDisplay/Config.h
-          arduino-cli compile --fqbn 'esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=app3M_fat9M_16MB' --build-path /tmp/obd-offline firmware/ObdDisplay
+          bash scripts/pi/build.sh offline
       - name: Connected code path compile (dummy config; never flash)
         run: |
           cp firmware/ObdDisplay/Config.h.example firmware/ObdDisplay/Config.h
           trap 'rm -f firmware/ObdDisplay/Config.h' EXIT
-          arduino-cli compile --fqbn 'esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=app3M_fat9M_16MB' --build-path /tmp/obd-connected firmware/ObdDisplay
+          bash scripts/pi/build.sh connected
