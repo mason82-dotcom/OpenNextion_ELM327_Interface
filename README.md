@@ -88,6 +88,32 @@ Ein Regressionstest verhindert eine Wiederholung dieser Layoutprobleme.
 **Vor jeder ELM327-Fahrzeugverbindung:** Den Pi-Labortest gemäß
 [ELM-SIMULATOR.md](docs/ELM-SIMULATOR.md) durchlaufen. Die Mode-01-Auswertung wurde auf einen strikt zeilenorientierten Parser umgestellt; dieser akzeptiert nur vollständige, headerlose 0x41-PID-Antworten und verwirft unsichere oder fehlerhafte Formate. DTCs bleiben unverändert Rohdaten ohne bestätigte ISO-TP-Dekodierung.
 
+## Android ELM327 v1.0.9 – Funktionsportierung (Feature-Branch)
+
+**Aktueller Entwicklungsbranch:** `feature/elm327-android-function-port-20261011`;
+eigener Draft-Pull-Request [#2](https://github.com/mason82-dotcom/OpenNextion_ELM327_Interface/pull/2).
+Diese Portierung ist noch **nicht** auf echter Hardware oder am Fahrzeug abgenommen.
+
+Die neue native Firmware integriert die **15 Android-Live-PIDs** inklusive
+STFT/LTFT beider Bänke, MAF, MAP, Lambda, ECU-Spannung und Luftdruck;
+zusätzlich `0100/0120/0140`-PID-Erkennung, mehrfach abgestuftes Polling,
+KOEO/KOER-Basisstatus und eine scrollbare **ALLE PIDS**-Seite.
+Manuelle Diagnoseansichten bieten Readiness/HU-AU-Vorcheck,
+Freeze-Frame-DTC, Mode-06-Aussetzerwerte sowie konservative DTC-Dekodierung
+und ausgewählte M272-Hinweise.
+`CSV,`-Messzeilen erscheinen **nur über USB-Serial**, noch nicht als SD-Datei.
+
+**Nicht gleichzusetzen mit vollständiger Android-Funktionsgleichheit:**
+Die mehrphasige Fuel-Trim-Testführung, volle ISO-TP-Multiframe-Dekodierung,
+alle M272-Erklärungstexte, persistente CSV-Speicherung, ein
+Read-only-Terminal und die gesamte Android-Timeout-/Resync-Logik
+sind noch nicht übernommen. Ein Fahrzeugtest ist nicht freigegeben.
+
+Siehe [Feature-Matrix und sicherer Pi-Build](docs/ANDROID-ELM327-FEATURE-PORT.md).
+Wegen der erweiterten Antworten muss der laufende Pi-Simulator
+**nach `git switch` neu gestartet** werden, bevor das LAB-Image
+auf dem Display getestet werden kann.
+
 ## Geplante Ausbaustufen
 
 1. **v0.1**: Display-/Touch-Bring-up, geschlossene Read-only-Allowlist, Basis-PIDs, Roh-DTCs und RPM-Chart (Offline-Display und Touch real geprüft).\n2. **v0.2 UI**: vier Touchseiten, dunkles Diagramm und Verbindungsdiagnose (Offline- und Pi-Simulator-LAB-Boardtest bestätigt).
