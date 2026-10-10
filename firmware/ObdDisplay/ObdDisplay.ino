@@ -532,7 +532,7 @@ static void pollOnePid() {
   pidValid[index]=true;
   if (p.pid==0x0C) {
     rpm=(int)value;
-    lv_label_set_text_fmt(rpmText,"%d rpm",rpm);
+    lv_label_set_text_fmt(rpmText, "%d rpm", rpm);
     lv_chart_set_next_value(rpmChart,rpmSeries,rpm);
     if (engineStateText)
       lv_label_set_text(engineStateText,
@@ -540,10 +540,10 @@ static void pollOnePid() {
                : "KOER: Motor laeuft");
   } else if (p.pid==0x05) {
     coolantC=(int)value;
-    lv_label_set_text_fmt(coolantText,"%d C",coolantC);
+    lv_label_set_text_fmt(coolantText, "%d C", coolantC);
   } else if (p.pid==0x0D) {
     speedKph=(int)value;
-    lv_label_set_text_fmt(speedText,"%d km/h",speedKph);
+    lv_label_set_text_fmt(speedText, "%d km/h", speedKph);
   }
   Serial.printf("CSV,%lu,01%02X,%s,%.*f,%s,%lu\n",
       (unsigned long)millis(),p.pid,p.title,p.decimals,value,p.unit,
