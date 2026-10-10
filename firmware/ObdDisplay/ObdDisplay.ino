@@ -197,6 +197,36 @@ static void onScanButton(lv_event_t *event) {
 #endif
 }
 
+static void onMorePidButton(lv_event_t *event) {
+  if (lv_event_get_code(event)==LV_EVENT_CLICKED) showPage(4);
+}
+static void onInspectionButton(lv_event_t *event) {
+  if (lv_event_get_code(event)!=LV_EVENT_CLICKED) return;
+  showPage(5);
+#if OBD_CONNECTED_BUILD
+  if (!adapterReady) {lv_label_set_text(inspectionText,"Keine Verbindung");return;}
+  inspectionReport="HU/AU-Vorabcheck: OBD-Lesedaten\n";
+  lv_label_set_text(inspectionText,inspectionReport.c_str());
+  inspectionRequested=true; misfireRequested=false; dtcScanRequested=false;
+  inspectionStep=0;
+#else
+  lv_label_set_text(inspectionText,"Offline: keine ECU-Daten");
+#endif
+}
+static void onMode06Button(lv_event_t *event) {
+  if (lv_event_get_code(event)!=LV_EVENT_CLICKED) return;
+  showPage(6);
+#if OBD_CONNECTED_BUILD
+  if (!adapterReady) {lv_label_set_text(misfireText,"Keine Verbindung");return;}
+  misfireReport="M272 Aussetzer / Mode 06 (simuliert im LAB)\n";
+  lv_label_set_text(misfireText,misfireReport.c_str());
+  misfireRequested=true; inspectionRequested=false; dtcScanRequested=false;
+  misfireStep=0;
+#else
+  lv_label_set_text(misfireText,"Offline: keine ECU-Daten");
+#endif
+}
+
 static void buildUi() {
   lv_obj_t *screen = lv_scr_act();
   lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
@@ -230,13 +260,15 @@ static void buildUi() {
   speedText = label(speedCard, "-- km/h", 10, 48, 124, LIGHT);
   lv_obj_set_style_text_font(speedText, &lv_font_montserrat_20, LV_PART_MAIN);
 #if defined(OBD_LAB_BUILD)
-  label(pages[0], "LABOR: simulierte Werte, kein Fahrzeug", 12, 254, 290, MUTED);
+  label(pages[0], "LAB: Testdaten", 12, 260, 148, MUTED);
 #elif OBD_CONNECTED_BUILD
-  label(pages[0], "Livewerte bei ECU-Unterstuetzung", 12, 254, 290, MUTED);
+  label(pages[0], "OBD-Livewerte", 12, 260, 148, MUTED);
 #else
-  label(pages[0], "Offline: keine ECU-Messwerte", 12, 254, 290, MUTED);
+  label(pages[0], "Offline-Modus", 12, 260, 148, MUTED);
 #endif
-  label(pages[0], "Keine Codierung / keine DTC-Loeschung", 12, 285, 291, 0x53D7CF);
+  lv_obj_t *morePids=makeButton(pages[0],"ALLE PIDS",166,249,142,43);
+  lv_obj_add_event_cb(morePids,onMorePidButton,LV_EVENT_CLICKED,nullptr);
+  label(pages[0], "Keine Codierung / keine DTC-Loeschung", 12, 295, 291, 0x53D7CF);
 
   // GRAPH: explicit dark LVGL chart styling (no white plot rectangle).
   label(pages[1], "DREHZAHLVERLAUF", 12, 3, 292, CYAN);
@@ -283,6 +315,8 @@ static void buildUi() {
 #endif
       12, 238, 146, 42);
   lv_obj_add_event_cb(dtcButton, onScanButton, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *checkButton=makeButton(pages[2],"HU/AU",169,238,139,42);
+  lv_obj_add_event_cb(checkButton,onInspectionButton,LV_EVENT_CLICKED,nullptr);
 #if !OBD_CONNECTED_BUILD
   lv_obj_add_state(dtcButton, LV_STATE_DISABLED);
 #endif
@@ -299,6 +333,28 @@ static void buildUi() {
   lv_obj_add_event_cb(touchBtn, onTouchButton, LV_EVENT_CLICKED, nullptr);
   touchText = label(pages[3], "Touch: 0", 175, 243, 132, LIGHT);
   label(pages[3], "Keine Schreib-, Stellglied- oder Loeschfunktion", 12, 307, 290, MUTED);
+
+  // Additional pages reached via large buttons, keeping existing four tabs.
+  label(pages[4],"SENSOREN / FUEL TRIMS",12,3,165,CYAN);
+  lv_obj_t *mode06Btn=makeButton(pages[4],"MODE 06",180,0,128,35);
+  lv_obj_add_event_cb(mode06Btn,onMode06Button,LV_EVENT_CLICKED,nullptr);
+  lv_obj_t *pidPanel=makeCard(pages[4],12,44,296,250);
+  lv_obj_add_flag(pidPanel,LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scroll_dir(pidPanel,LV_DIR_VER);
+  extraDataText=label(pidPanel,"PIDs werden erkannt...",10,7,272,LIGHT);
+  engineStateText=label(pages[4],"Betriebszustand: noch unbekannt",12,308,295,MUTED);
+  label(pages[5],"HU/AU-VORCHECK / OBD",12,3,296,CYAN);
+  label(pages[5],"Nur Indikation, keine amtliche Pruefung",12,28,296,MUTED);
+  lv_obj_t *insPanel=makeCard(pages[5],12,63,296,276);
+  lv_obj_add_flag(insPanel,LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scroll_dir(insPanel,LV_DIR_VER);
+  inspectionText=label(insPanel,"HU/AU auf DTC-Seite starten",9,10,273,LIGHT);
+  label(pages[6],"MODE 06 / AUSSETZER",12,3,296,CYAN);
+  label(pages[6],"M272: Bank 1 Zyl.1-3 | Bank 2 Zyl.4-6",12,27,295,MUTED);
+  lv_obj_t *misPanel=makeCard(pages[6],12,62,296,274);
+  lv_obj_add_flag(misPanel,LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scroll_dir(misPanel,LV_DIR_VER);
+  misfireText=label(misPanel,"Mode 06 ueber ALLE PIDS starten",9,10,274,LIGHT);
 
   const char *tabs[4] = {"LIVE", "GRAPH", "DTC", "INFO"};
   for (uint8_t i = 0; i < 4; ++i) {
