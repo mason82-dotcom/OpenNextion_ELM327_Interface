@@ -19,8 +19,18 @@ case "$MODE" in
       exit 3
     fi
     ;;
+  lab)
+    if [[ -f "$SKETCH/Config.h" ]]; then
+      printf 'REFUSED: lab build must not contain vehicle Config.h.\n' >&2
+      exit 3
+    fi
+    if [[ ! -f "$SKETCH/LabConfig.h" ]]; then
+      printf 'REFUSED: lab build needs local LabConfig.h.\n' >&2
+      exit 3
+    fi
+    ;;
   *)
-    printf 'Usage: bash scripts/pi/build.sh [offline|connected]\n' >&2
+    printf 'Usage: bash scripts/pi/build.sh [offline|connected|lab]\n' >&2
     exit 2
     ;;
 esac
@@ -36,12 +46,16 @@ FQBN="esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=app3M_fat9M_16
 BUILD="$ROOT/build/firmware-$MODE"
 mkdir -p "$ROOT/build/logs"
 LOG="$ROOT/build/logs/firmware-$MODE-build.log"
+LAB_FLAGS=''
+if [[ "$MODE" == "lab" ]]; then
+  LAB_FLAGS=' -DOBD_LAB_BUILD=1'
+fi
 printf 'Compiling %s firmware with global LVGL 8.3.11 flags.\n' "$MODE"
 printf 'Artifact directory: %s\nLog: %s\n' "$BUILD" "$LOG"
 if arduino-cli compile --clean --jobs 2 \
     --fqbn "$FQBN" \
-    --build-property 'compiler.c.extra_flags=-DLV_CONF_SKIP -DLV_COLOR_DEPTH=16 -DLV_FONT_MONTSERRAT_20=1 -DLV_FONT_MONTSERRAT_24=1' \
-    --build-property 'compiler.cpp.extra_flags=-DLV_CONF_SKIP -DLV_COLOR_DEPTH=16 -DLV_FONT_MONTSERRAT_20=1 -DLV_FONT_MONTSERRAT_24=1' \
+    --build-property "compiler.c.extra_flags=-DLV_CONF_SKIP -DLV_COLOR_DEPTH=16 -DLV_FONT_MONTSERRAT_20=1 -DLV_FONT_MONTSERRAT_24=1${LAB_FLAGS}" \
+    --build-property "compiler.cpp.extra_flags=-DLV_CONF_SKIP -DLV_COLOR_DEPTH=16 -DLV_FONT_MONTSERRAT_20=1 -DLV_FONT_MONTSERRAT_24=1${LAB_FLAGS}" \
     --build-path "$BUILD" \
     "$SKETCH" 2>&1 | tee "$LOG"; then
   printf '\nBUILD OK; NEVER FLASHED. Binaries:\n'
