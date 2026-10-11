@@ -79,6 +79,7 @@ static uint8_t dtcIndex = 0;
 static uint32_t txCount = 0, timeoutCount = 0, inputErrorCount = 0;
 static obd_trim::Test trimTest;
 static uint32_t lastTrimUi=0;
+static uint8_t trimPollIndex=0;
 #endif
 
 static void resetPanel() {
@@ -237,6 +238,7 @@ static void onTrimStart(lv_event_t *event) {
   inspectionRequested=false;
   misfireRequested=false;
   dtcScanRequested=false;
+  trimPollIndex=0;
   trimTest.start();
   renderTrimPage();
 #else
@@ -716,7 +718,23 @@ static void updateExtraData() {
   lv_label_set_text(extraDataText, summary.c_str());
 }
 static void pollOnePid() {
-  const int index = pollScheduler.choose(millis(), pidMasks);
+  int index=-1;
+  if(trimTest.running()){
+    // During the test, prioritize fresh engine state and all four trims.
+    // Eight PIDs are sent sequentially via the SAME read-only transport;
+    // no simultaneous requests, no commands added to the allowlist.
+    static const uint8_t priorityPids[]={
+      0x0C,0x0D,0x06,0x07,0x08,0x09,0x10,0x0B};
+    for(uint8_t n=0;n<8;++n){
+      const uint8_t pid=priorityPids[trimPollIndex];
+      trimPollIndex=(trimPollIndex+1)%8;
+      if(!pidSupported(pid))continue;
+      index=obd_pids::indexOf(pid);
+      if(index>=0)break;
+    }
+  } else {
+    index=pollScheduler.choose(millis(),pidMasks);
+  }
   if (index < 0) return;
   const auto &p = obd_pids::catalog[index];
   String response;
