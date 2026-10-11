@@ -1,0 +1,99 @@
+"""End-to-end ELM327 LAB TCP framing and DTC fixture hot-switch tests.
+
+Uses loopback and an OS-assigned ephemeral port. No vehicle, real adapter,
+external network, fixed service or flash operation is involved.
+"""
+import importlib.util
+from pathlib import Path
+import socket
+import tempfile
+import threading
+import unittest
+
+
+MODULE_FILE = Path(__file__).resolve().parents[1] / "tools" / "elm327_lab_simulator.py"
+spec = importlib.util.spec_from_file_location("elm327_lab_tcp", MODULE_FILE)
+lab = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(lab)
+
+
+def exchange(sock: socket.socket, command: str) -> str:
+    sock.sendall((command + "\r").encode("ascii"))
+    received = bytearray()
+    while b">" not in received:
+        packet = sock.recv(512)
+        if not packet:
+            raise AssertionError("Simulator closed connection before ELM prompt")
+        received.extend(packet)
+        if len(received) > 2048:
+            raise AssertionError("Response exceeds bounded test buffer")
+    return received.decode("ascii")
+
+
+class SimulatorTcpTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory(prefix="obd-tcp-fixture-")
+        cls.fixture = Path(cls.tmp.name) / "dtc.txt"
+        cls.rpm = Path(cls.tmp.name) / "rpm.txt"
+        cls.fault = Path(cls.tmp.name) / "fault.txt"
+        cls.server = lab.Server(("127.0.0.1", 0), lab.ElmCrHandler)
+        cls.server.dtc_file = str(cls.fixture)
+        cls.server.rpm_file = str(cls.rpm)
+        cls.server.fault_file = str(cls.fault)
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.address = cls.server.server_address
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=5)
+        cls.tmp.cleanup()
+
+    def setUp(self):
+        for path in (self.fixture, self.rpm, self.fault):
+            path.unlink(missing_ok=True)
+        self.sock = socket.create_connection(self.address, timeout=3)
+        self.sock.settimeout(3)
+        self.assertIn("ELM327 LAB SIM v0.1", exchange(self.sock, "ATZ"))
+        self.assertIn("OK", exchange(self.sock, "ATE0"))
+
+    def tearDown(self):
+        self.sock.close()
+
+    def test_indexed_frames_and_hot_switch_on_same_tcp_session(self):
+        self.assertEqual(exchange(self.sock, "ATDPN"), "A6\r>")
+        self.assertEqual(exchange(self.sock, "03"), "43 00\r>")
+        self.fixture.write_text("MULTI\n", encoding="ascii")
+        reply = exchange(self.sock, "03")
+        self.assertIn("00A\r0:43 04 01 71 03 01 03\r1:02 03 03\r>", reply)
+        self.fixture.write_text("TWO\n", encoding="ascii")
+        reply = exchange(self.sock, "03")
+        self.assertIn("004\r0:43 01 01 74\r00A", reply)
+        self.assertIn("1:02 03 03", reply)
+        self.fixture.write_text("TRUNCATED\n", encoding="ascii")
+        self.assertEqual(exchange(self.sock, "03"),
+                         "00A\r0:43 04 01 71 03 01 03\r>")
+        self.fixture.write_text("BAD_SEQUENCE\n", encoding="ascii")
+        self.assertIn("2:02 03 03", exchange(self.sock, "03"))
+        self.fixture.unlink()
+        self.assertEqual(exchange(self.sock, "03"), "43 00\r>")
+        self.assertEqual(exchange(self.sock, "07"), "47 00\r>")
+        self.assertEqual(exchange(self.sock, "0A"), "4A 00\r>")
+
+    def test_invalid_pid_is_separate_from_dtc_fixtures(self):
+        self.fault.write_text("010C\n", encoding="ascii")
+        self.assertEqual(exchange(self.sock, "010C"), "NO DATA\r>")
+        self.assertEqual(exchange(self.sock, "0105"), "41 05 82\r>")
+        self.rpm.write_text("2500\n", encoding="ascii")
+        self.fault.unlink()
+        self.assertEqual(exchange(self.sock, "010C"), "41 0C 27 10\r>")
+        self.assertEqual(exchange(self.sock, "04"), "?\r>")
+        self.assertEqual(exchange(self.sock, "ATSH7E0"), "?\r>")
+        self.assertEqual(exchange(self.sock, "010C"), "41 0C 27 10\r>")
+
+
+if __name__ == "__main__":
+    unittest.main()
