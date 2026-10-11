@@ -15,6 +15,8 @@
 #include "ObdResponseParser.h"
 #include "ObdPidCatalog.h"
 #include "ObdDiagnostics.h"
+#include "ObdIsoTp.h"
+#include "ObdDtcNames.h"
 #include "FuelTrimTest.h"
 
 #if defined(OBD_LAB_BUILD)
@@ -55,10 +57,10 @@ static lv_disp_drv_t dispDriver;
 static lv_obj_t *statusText, *rpmText, *coolantText, *speedText, *scanText, *touchText;
 static lv_obj_t *rpmChart;
 static lv_chart_series_t *rpmSeries;
-static lv_obj_t *pages[8], *navButtons[4], *linkText, *statsText;
+static lv_obj_t *pages[9], *navButtons[4], *linkText, *statsText;
 static lv_obj_t *extraDataText, *engineStateText, *inspectionText, *misfireText;
 static lv_obj_t *trimStageText, *trimReportText;
-static lv_obj_t *dtcModeText[3];
+static lv_obj_t *dtcModeText[3], *dtcDetailText;
 static uint32_t tapCount = 0;
 
 #if OBD_CONNECTED_BUILD
@@ -76,6 +78,7 @@ static bool inspectionRequested = false, misfireRequested = false;
 static uint8_t inspectionStep = 0, misfireStep = 0;
 static String inspectionReport, misfireReport;
 static uint8_t dtcIndex = 0;
+static String dtcReport;
 static uint32_t txCount = 0, timeoutCount = 0, inputErrorCount = 0;
 static obd_trim::Test trimTest;
 static uint32_t lastTrimUi=0;
@@ -166,8 +169,8 @@ static lv_obj_t* makeButton(lv_obj_t *parent, const char *title, int x, int y,
 }
 
 static void showPage(uint8_t page) {
-  if (page >= 8) return;
-  for (uint8_t i = 0; i < 8; ++i) {
+  if (page >= 9) return;
+  for (uint8_t i = 0; i < 9; ++i) {
     if (i == page) lv_obj_clear_flag(pages[i], LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(pages[i], LV_OBJ_FLAG_HIDDEN);
     if (i >= 4) continue;
@@ -189,6 +192,10 @@ static void onTouchButton(lv_event_t *event) {
   lv_label_set_text_fmt(touchText, "Touch: %lu", (unsigned long)tapCount);
 }
 
+static void onDtcDetails(lv_event_t *event) {
+  if(lv_event_get_code(event)==LV_EVENT_CLICKED) showPage(8);
+}
+
 static void onScanButton(lv_event_t *event) {
   if (lv_event_get_code(event) != LV_EVENT_CLICKED) return;
 #if OBD_CONNECTED_BUILD
@@ -200,6 +207,13 @@ static void onScanButton(lv_event_t *event) {
   cancelTrimForOtherDiagnostic();
   dtcScanRequested = true;
   dtcIndex = 0;
+#if defined(OBD_LAB_BUILD)
+  dtcReport="LAB-SIMULATION: keine echten Fahrzeugcodes\n";
+#else
+  dtcReport="ECU-Lesedaten (noch nicht fahrzeugvalidiert)\n";
+#endif
+  dtcReport+="ATH0: Antwortbloecke ohne ECU-Adressen\n\n";
+  if(dtcDetailText)lv_label_set_text(dtcDetailText,dtcReport.c_str());
   lv_label_set_text(scanText, "DTC-Leseabfrage angefordert");
   for (int i = 0; i < 3; ++i) lv_label_set_text(dtcModeText[i], "Wartet auf Antwort...");
 #endif
@@ -305,7 +319,7 @@ static void buildUi() {
 
   label(screen, "OBD DIAG  /  READ-ONLY", 11, 11, 295, CYAN);
   statusText = label(screen, "Initialisierung...", 11, 38, 296, MUTED);
-  for (uint8_t i = 0; i < 8; ++i) {
+  for (uint8_t i = 0; i < 9; ++i) {
     pages[i] = lv_obj_create(screen);
     lv_obj_set_pos(pages[i], 0, 74);
     lv_obj_set_size(pages[i], 320, 349);
@@ -389,8 +403,10 @@ static void buildUi() {
 #if !OBD_CONNECTED_BUILD
   lv_obj_add_state(dtcButton, LV_STATE_DISABLED);
 #endif
-  scanText = label(pages[2], "Noch kein DTC-Scan", 12, 290, 292, MUTED);
-  label(pages[2], "CAN/Legacy: begrenzte DTC-Dekodierung", 12, 322, 289, 0xFFCC76);
+  scanText = label(pages[2], "Noch kein DTC-Scan", 12, 290, 145, MUTED);
+  lv_obj_t *detailsButton=makeButton(pages[2],"DETAILS",166,284,142,39);
+  lv_obj_add_event_cb(detailsButton,onDtcDetails,LV_EVENT_CLICKED,nullptr);
+  label(pages[2], "ISO-TP: strikte, begrenzte Dekodierung", 12, 329, 290, 0xFFCC76);
 
   // INFO: link diagnostics and local touch counter.
   label(pages[3], "SYSTEM / VERBINDUNG", 12, 3, 290, CYAN);
@@ -447,6 +463,17 @@ static void buildUi() {
   lv_obj_add_event_cb(trimStart,onTrimStart,LV_EVENT_CLICKED,nullptr);
   lv_obj_t *trimCancel=makeButton(pages[7],"ABBRUCH",166,296,142,39);
   lv_obj_add_event_cb(trimCancel,onTrimCancel,LV_EVENT_CLICKED,nullptr);
+
+  // DTC detail list is scrollable; no scan begins merely by opening it.
+  label(pages[8],"DTC-DETAILS / NUR LESEN",12,3,296,CYAN);
+  label(pages[8],"03 / 07 / 0A: getrennte Antworten",12,30,296,MUTED);
+  lv_obj_t *detailCard=makeCard(pages[8],12,63,296,275);
+  lv_obj_add_flag(detailCard,LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scroll_dir(detailCard,LV_DIR_VER);
+  dtcDetailText=label(detailCard,
+      "DTC auf der DTC-Seite manuell einlesen.\n"
+      "ISO-TP-Codes nur aus vollstaendigen Antworten.\n"
+      "Keine Loeschfunktion.",9,9,274,LIGHT);
 
   const char *tabs[4] = {"LIVE", "GRAPH", "DTC", "INFO"};
   for (uint8_t i = 0; i < 4; ++i) {
@@ -534,6 +561,11 @@ static void markDisconnected(const char *reason) {
     lv_obj_scroll_to_y(lv_obj_get_parent(misfireText), 0, LV_ANIM_OFF);
   }
   if (scanText) lv_label_set_text(scanText, "Verbindung verloren: DTC neu lesen");
+  dtcReport="Verbindung verloren: vorherige DTC-Daten ungueltig. Neu lesen.";
+  if(dtcDetailText) {
+    lv_label_set_text(dtcDetailText,dtcReport.c_str());
+    lv_obj_scroll_to_y(lv_obj_get_parent(dtcDetailText),0,LV_ANIM_OFF);
+  }
   for (int i=0;i<3;++i)
     if (dtcModeText[i]) lv_label_set_text(dtcModeText[i], "DTC: -- (getrennt)");
 #if defined(OBD_LAB_BUILD)
@@ -806,7 +838,26 @@ static void scanOneDtcMode() {
   }
   Serial.printf("DTC_RAW,%s,%s\n", names[dtcIndex], answer.c_str());
   const uint8_t responseMode[] = {0x43,0x47,0x4A};
-  auto dtcs=obd_diag::parseDtcs(answer.c_str(),responseMode[dtcIndex],dtcEncoding);
+  auto dtcs=obd_isotp::parseDtcs(answer.c_str(),responseMode[dtcIndex],dtcEncoding);
+  dtcReport+=String(names[dtcIndex])+": ";
+  if (!dtcs.gotAnswer || dtcs.malformed) {
+    dtcReport+="NICHT SICHER DEKODIERBAR\n";
+    dtcReport+="  RAW: "+answer.substring(0,100)+"\n\n";
+  } else {
+    dtcReport+=String(dtcs.count)+" verschiedene Codes";
+    dtcReport+=" / "+String(dtcs.ecuResponses)+" Antwortbloecke\n";
+    for(std::size_t k=0;k<dtcs.count;++k){
+      const char *code=dtcs.entries[k].code;
+      dtcReport+="  "+String(code);
+      const char *description=obd_dtc_names::describe(code);
+      if(description)dtcReport+=": "+String(description);
+      dtcReport+="\n";
+      const char *hint=obd_diag::m272Hint(code);
+      if(hint)dtcReport+="  Hinweis: "+String(hint)+"\n";
+    }
+    dtcReport+="\n";
+  }
+  if (dtcDetailText)lv_label_set_text(dtcDetailText,dtcReport.c_str());
   if (!dtcs.gotAnswer || dtcs.malformed) {
     String preview=answer.substring(0,30);
     lv_label_set_text_fmt(dtcModeText[dtcIndex],"%s: RAW %s",
@@ -884,7 +935,7 @@ static void scanInspectionStep() {
     const char *labels[]={"Gespeichert","Pending","Permanent"};
     const uint8_t modes[]={0x43,0x47,0x4A};
     const uint8_t i=inspectionStep-5;
-    auto dtcs=obd_diag::parseDtcs(response.c_str(),modes[i],dtcEncoding);
+    auto dtcs=obd_isotp::parseDtcs(response.c_str(),modes[i],dtcEncoding);
     if(!dtcs.gotAnswer || dtcs.malformed)
       inspectionReport+=String(labels[i])+": nicht sicher lesbar\n";
     else {
