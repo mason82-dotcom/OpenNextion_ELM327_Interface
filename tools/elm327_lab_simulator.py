@@ -41,9 +41,31 @@ RESPONSES = {
     "0A": "4A 00",            # no permanent DTC
 }
 ADAPTER_COMMANDS = {"ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATSP0", "ATDPN"}
+# Headerless indexed multi-frame responses from an ELM-style formatter.
+# An indexed response is a separate complete sequence, NOT an ECU address.
+DTC_FIXTURES = {
+    "MULTI": {
+        "03": "00A\r0:43 04 01 71 03 01 03\r1:02 03 03",
+        "07": "47 00", "0A": "4A 00",
+    },
+    "TWO": {
+        "03": "004\r0:43 01 01 74\r"
+              "00A\r0:43 04 01 71 03 01 03\r1:02 03 03",
+        "07": "47 00", "0A": "4A 00",
+    },
+    "TRUNCATED": {
+        "03": "00A\r0:43 04 01 71 03 01 03", # Missing segment 1
+        "07": "47 00", "0A": "4A 00",
+    },
+    "BAD_SEQUENCE": {
+        "03": "00A\r0:43 04 01 71 03 01 03\r2:02 03 03",
+        "07": "47 00", "0A": "4A 00",
+    },
+}
 
 
-def answer_for(command: str, fault_pid: str | None = None, rpm_override: int | None = None) -> str:
+def answer_for(command: str, fault_pid: str | None = None, rpm_override: int | None = None,
+               dtc_fixture: str | None = None) -> str:
     """Return only fixture responses, never execute or forward a command."""
     command = command.strip().upper()
     if command == "ATZ":
@@ -58,6 +80,8 @@ def answer_for(command: str, fault_pid: str | None = None, rpm_override: int | N
     if command == "010C" and rpm_override is not None:
         raw = int(rpm_override) * 4
         return f"41 0C {(raw >> 8) & 0xFF:02X} {raw & 0xFF:02X}"
+    if dtc_fixture in DTC_FIXTURES and command in ("03", "07", "0A"):
+        return DTC_FIXTURES[dtc_fixture][command]
     if command in RESPONSES:
         return RESPONSES[command]
     return "?"
@@ -95,6 +119,17 @@ def rpm_from_file(path: str | None) -> int | None:
     return rpm if 0 <= rpm <= 7000 else None
 
 
+def dtc_fixture_from_file(path: str | None) -> str | None:
+    if not path:
+        return None
+    try:
+        value = Path(path).read_text(encoding="ascii").strip().upper()
+    except (OSError, UnicodeError):
+        return None
+    # Only recognized local fixtures; no arbitrary payload pass-through.
+    return value if value in DTC_FIXTURES else None
+
+
 class ElmCrHandler(socketserver.BaseRequestHandler):
     """ELM327-compatible CR terminator; one command per prompt."""
     def handle(self):
@@ -119,7 +154,10 @@ class ElmCrHandler(socketserver.BaseRequestHandler):
                         print(f"[LAB] RX {cmd}", flush=True)
                         fault_pid = fault_pid_from_file(self.server.fault_file)
                         rpm_override = rpm_from_file(self.server.rpm_file)
-                        reply = answer_for(cmd, fault_pid, rpm_override)
+                        fixture = dtc_fixture_from_file(self.server.dtc_file)
+                        reply = answer_for(cmd, fault_pid, rpm_override, fixture)
+                        if fixture and cmd in ("03", "07", "0A"):
+                            print(f"[LAB] DTC FIXTURE {fixture} for {cmd}", flush=True)
                         if reply == "NO DATA" and fault_pid == cmd:
                             print(f"[LAB] INJECT NO DATA {cmd} (TCP remains open)", flush=True)
                         if reply == "?":
@@ -155,15 +193,20 @@ def main():
                         help="optional local file containing a permitted Mode 01 PID; return NO DATA for it")
     parser.add_argument("--rpm-file", default=None,
                         help="optional local file with simulated RPM from 0..7000 (no vehicle access)")
+    parser.add_argument("--dtc-file", default=None,
+                        help="optional local DTC fixture selector: MULTI, TWO, TRUNCATED, BAD_SEQUENCE")
     args = parser.parse_args()
     with Server((args.bind, args.port), ElmCrHandler) as server:
         server.fault_file = args.fault_file
         server.rpm_file = args.rpm_file
+        server.dtc_file = args.dtc_file
         print(f"[LAB] ELM327 simulator listening on {args.bind}:{args.port}", flush=True)
         if server.fault_file:
             print("[LAB] PID fault injection enabled (inactive until file exists)", flush=True)
         if server.rpm_file:
             print("[LAB] RPM fixture override enabled (inactive until file exists)", flush=True)
+        if server.dtc_file:
+            print("[LAB] DTC fixture selector enabled (inactive until file exists)", flush=True)
         print("[LAB] No vehicle/OBD adapter required; Ctrl+C to stop", flush=True)
         try:
             server.serve_forever(poll_interval=0.2)
