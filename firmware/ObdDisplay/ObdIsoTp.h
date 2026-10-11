@@ -126,6 +126,22 @@ inline obd_diag::DtcResult parseDtcs(const char *response,
     if(len>256){result.malformed=true;return;}
     std::memcpy(plain,line,len);
     plain[len]='\0';
+    // Never present a partial successful ECU block as a *complete scan*
+    // if the same ELM response also contains a link/transport failure.
+    // Header-bearing raw CAN is not supported with the current ATH0 parser.
+    static const char *fatal[]={
+      "BUFFER FULL","CAN ERROR","BUS ERROR","DATA ERROR",
+      "FB ERROR","STOPPED","UNABLE TO CONNECT","BUS INIT","NO DATA"};
+    for(const char *term:fatal)
+      if(std::strstr(plain,term)){result.malformed=true;return;}
+    if(len>=3 && isHex(plain[0]) && isHex(plain[1]) &&
+       isHex(plain[2]) && std::strchr(plain,' ')){
+      // In this mode any 3-hex CAN ID followed by raw bytes is foreign
+      // to the ELM-length/indexed encoding. Do not mistake it for DTCs.
+      if((plain[0]=='7'||plain[0]=='6') && isHex(plain[3])){
+        result.malformed=true;return;
+      }
+    }
     const auto decoded=obd_diag::parseDtcs(plain,mode,encoding);
     absorb(result,decoded);
   };
