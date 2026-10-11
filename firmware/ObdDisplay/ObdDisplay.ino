@@ -18,6 +18,7 @@
 #include "ObdIsoTp.h"
 #include "ObdDtcNames.h"
 #include "FuelTrimTest.h"
+#include "SdLogFormat.h"
 
 #if defined(OBD_LAB_BUILD)
 #if __has_include("Config.h")
@@ -36,6 +37,10 @@
 #if !defined(ELM_WIFI_SSID) || !defined(ELM_WIFI_PASSWORD) || !defined(ELM_HOST) || !defined(ELM_PORT)
 #error "Config.h must define all ELM_* settings."
 #endif
+#endif
+
+#if OBD_CONNECTED_BUILD
+#include <SD_MMC.h>
 #endif
 
 using obd_policy::Command;
@@ -69,6 +74,7 @@ static lv_obj_t *pages[9], *navButtons[4], *linkText, *statsText;
 static lv_obj_t *extraDataText, *engineStateText, *inspectionText, *misfireText;
 static lv_obj_t *trimStageText, *trimReportText;
 static lv_obj_t *dtcModeText[3], *dtcDetailText;
+static lv_obj_t *sdText;
 static uint32_t tapCount = 0;
 
 #if OBD_CONNECTED_BUILD
@@ -102,6 +108,102 @@ static uint32_t lastTrimUi=0;
 static obd_trim::Stage lastTrimRenderedStage=obd_trim::Stage::Idle;
 static uint8_t trimPollIndex=0;
 static void cancelTrimForOtherDiagnostic();
+
+// MicroSD CSV log (v0.3). Optional: without a card nothing changes; the
+// first failed write stops logging instead of retrying on a bad card.
+#if defined(OBD_LAB_BUILD)
+static constexpr const char *LOG_SOURCE = "LAB_SIMULATED";
+#else
+static constexpr const char *LOG_SOURCE = "ECU_ADAPTER_UNVALIDATED";
+#endif
+static File sdFile;
+static bool sdReady = false;
+static uint16_t sdSession = 0;
+static uint8_t sdPart = 1;
+static uint32_t sdBytes = 0, sdTotalBytes = 0, sdLastFlush = 0;
+static const char *sdProblem = "keine Karte";
+
+static void sdStop(const char *problem) {
+  if (sdFile) sdFile.close();
+  sdReady = false;
+  sdProblem = problem;
+  Serial.printf("SD: %s\n", problem);
+}
+
+static bool sdOpenPart() {
+  char name[32], head[160];
+  if (!obd_log::fileName(name, sizeof name, sdSession, sdPart)) {
+    sdStop("Dateinummern erschoepft");
+    return false;
+  }
+  sdFile = SD_MMC.open(name, FILE_WRITE);
+  const size_t n = obd_log::header(head, sizeof head, LOG_SOURCE, sdSession, sdPart);
+  if (!sdFile || n == 0 || sdFile.write((const uint8_t *)head, n) != n) {
+    sdStop("Datei nicht anlegbar");
+    return false;
+  }
+  sdBytes = n;
+  sdTotalBytes += n;
+  sdLastFlush = millis();
+  Serial.printf("SD: logging to %s\n", name);
+  return true;
+}
+
+static void sdWrite(const char *row, size_t len) {
+  if (!sdReady || len == 0) return;
+  if (obd_log::shouldRotate(sdBytes, len)) {
+    sdFile.close();
+    ++sdPart;
+    if (!sdOpenPart()) return;
+  }
+  if (sdFile.write((const uint8_t *)row, len) != len) {
+    sdStop("Schreibfehler, Logging gestoppt");
+    return;
+  }
+  sdBytes += len;
+  sdTotalBytes += len;
+}
+
+static void sdEvent(const char *text) {
+  char row[112];
+  sdWrite(row, obd_log::eventRow(row, sizeof row, millis(), text));
+}
+
+static void sdFlushIfDue(uint32_t now) {
+  if (!sdReady || now - sdLastFlush < obd_log::FLUSH_INTERVAL_MS) return;
+  sdFile.flush();
+  sdLastFlush = now;
+}
+
+static void sdBegin() {
+  // CS#/DATA3 sits on the expander and is already high after resetPanel().
+  // Never format: an unreadable card may still hold data the user wants.
+  if (!SD_MMC.setPins(SD_CLK_PIN, SD_CMD_PIN, SD_D0_PIN) ||
+      !SD_MMC.begin("/sdcard", true, false, SDMMC_FREQ_DEFAULT)) {
+    sdProblem = "keine Karte";
+    Serial.println("SD: no card mounted, logging off");
+    return;
+  }
+  if (!SD_MMC.exists(obd_log::DIRECTORY) && !SD_MMC.mkdir(obd_log::DIRECTORY)) {
+    sdStop("Ordner /obd nicht anlegbar");
+    return;
+  }
+  uint16_t highest = 0;
+  File dir = SD_MMC.open(obd_log::DIRECTORY);
+  for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+    const uint16_t session = obd_log::sessionOf(f.name());
+    if (session > highest) highest = session;
+    f.close();
+  }
+  dir.close();
+  sdSession = obd_log::nextSession(highest);
+  if (sdSession == 0) {
+    sdStop("Sitzungsnummern erschoepft");
+    return;
+  }
+  sdPart = 1;
+  sdReady = sdOpenPart();
+}
 #endif
 
 static void resetPanel() {
@@ -438,6 +540,7 @@ static void buildUi() {
   linkText = label(sysCard, "WLAN / OBD: --", 10, 12, 274, LIGHT);
   statsText = label(sysCard, "Keine Diagnosedaten", 10, 62, 274, MUTED);
   label(sysCard, "Feste Read-only-Befehlsfreigabe", 10, 126, 274, 0x53D7CF);
+  sdText = label(sysCard, "SD: --", 10, 147, 274, MUTED);
   lv_obj_t *touchBtn = makeButton(pages[3], "Touch testen", 12, 230, 146, 43);
   lv_obj_add_event_cb(touchBtn, onTouchButton, LV_EVENT_CLICKED, nullptr);
   touchText = label(pages[3], "Touch: 0", 175, 243, 132, LIGHT);
@@ -563,10 +666,23 @@ static void updateLinkStats(uint32_t now) {
       (unsigned long)timeoutCount, (unsigned long)inputErrorCount,
       (unsigned long)lastLatencyMs);
   statsTxCount = txCount;
+  if (sdText) {
+    if (sdReady)
+      lv_label_set_text_fmt(sdText, "SD: S%04u_P%02u  %lu KB",
+          (unsigned)sdSession, (unsigned)sdPart,
+          (unsigned long)(sdTotalBytes / 1024));
+    else
+      lv_label_set_text_fmt(sdText, "SD: %s", sdProblem);
+  }
   lastStatsUi = now;
 }
 
 static void markDisconnected(const char *reason) {
+  if (adapterReady) {
+    char event[96];
+    snprintf(event, sizeof event, "adapter disconnected: %s", reason);
+    sdEvent(event);
+  }
   adapterReady = false;
   pidMasks[0] = pidMasks[1] = pidMasks[2] = 0;
   pollScheduler.reset();
@@ -698,6 +814,11 @@ static bool initAdapter() {
   Serial.println("CSV_SOURCE,ECU_ADAPTER_UNVALIDATED");
 #endif
   Serial.println("CSV,millis,pid,label,value,unit,latency_ms");
+  char event[96];
+  snprintf(event, sizeof event, "adapter connected CAN=%d PIDs=%08lX/%08lX/%08lX",
+      dtcEncoding==obd_diag::DtcEncoding::Can, (unsigned long)pidMasks[0],
+      (unsigned long)pidMasks[1], (unsigned long)pidMasks[2]);
+  sdEvent(event);
   return true;
 }
 
@@ -869,9 +990,14 @@ static void pollOnePid() {
     speedKph=(int)value;
     lv_label_set_text_fmt(speedText, "%d km/h", speedKph);
   }
+  const uint32_t sampledAt=millis();
+  const uint32_t latency=sampledAt-started;
   Serial.printf("CSV,%lu,01%02X,%s,%.*f,%s,%lu\n",
-      (unsigned long)millis(),p.pid,p.title,p.decimals,value,p.unit,
-      (unsigned long)(millis()-started));
+      (unsigned long)sampledAt,p.pid,p.title,p.decimals,value,p.unit,
+      (unsigned long)latency);
+  char row[112];
+  sdWrite(row, obd_log::pidRow(row, sizeof row, sampledAt, p.pid, p.title,
+                               value, p.decimals, p.unit, latency));
   if (millis()-lastExtraRefresh >= 500) {
     updateExtraData(); lastExtraRefresh=millis();
   }
@@ -921,6 +1047,9 @@ static void scanOneDtcMode() {
     lv_label_set_text_fmt(dtcModeText[dtcIndex],"%s: RAW %s",
                           names[dtcIndex],preview.c_str());
     dtcScanUndecodable = true;
+    sdEvent(dtcIndex==0 ? "DTC 03 nicht sicher dekodierbar" :
+            dtcIndex==1 ? "DTC 07 nicht sicher dekodierbar" :
+                          "DTC 0A nicht sicher dekodierbar");
   } else if (dtcs.count==0) {
     lv_label_set_text_fmt(dtcModeText[dtcIndex],"%s: keine",names[dtcIndex]);
   } else {
@@ -931,8 +1060,13 @@ static void scanOneDtcMode() {
       lv_label_set_text_fmt(dtcModeText[dtcIndex],"%s: %s",
           names[dtcIndex],dtcs.entries[0].code);
     dtcScanCodes += static_cast<uint16_t>(dtcs.count);
-    for (std::size_t i=0;i<dtcs.count;++i)
+    static const char *modeIds[] = {"03","07","0A"};
+    for (std::size_t i=0;i<dtcs.count;++i) {
       Serial.printf("DTC,%s,%s\n",names[dtcIndex],dtcs.entries[i].code);
+      char row[48];
+      sdWrite(row, obd_log::dtcRow(row, sizeof row, millis(),
+                                   modeIds[dtcIndex], dtcs.entries[i].code));
+    }
   }
   ++dtcIndex;
   if (dtcIndex < 3) {
@@ -1092,6 +1226,7 @@ void setup() {
   lv_indev_drv_register(&indev);
   buildUi();
 #if OBD_CONNECTED_BUILD
+  sdBegin();
   WiFi.mode(WIFI_STA);
   // Modem sleep only wakes the radio per DTIM beacon and adds hundreds of
   // ms per request/reply; this display is powered by the vehicle anyway.
@@ -1111,6 +1246,7 @@ void setup() {
   lv_label_set_text(statusText, "OFFLINE-TEST | WLAN und OBD AUS");
   lv_label_set_text(linkText, "WLAN / OBD: ausgeschaltet");
   lv_label_set_text(statsText, "Offline: kein WLAN, keine ECU-Kommandos");
+  lv_label_set_text(sdText, "SD: Logging nur mit Adapter-Verbindung");
   Serial.println("OBD DIAG: OFFLINE DEMO; NO WIFI, NO VEHICLE COMMANDS");
 #endif
 }
@@ -1141,6 +1277,7 @@ void loop() {
     lastCommandDone = millis();
   }
   updateLinkStats(millis());
+  sdFlushIfDue(millis());
   if(trimTest.running()) trimTest.tick(millis());
   if(millis()-lastTrimUi>=500) {
     lastTrimUi=millis();

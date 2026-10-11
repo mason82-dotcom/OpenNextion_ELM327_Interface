@@ -15,7 +15,7 @@ Eigenständiger OBD-II-Monitor auf dem **OpenNextion ONX3248G035** (ESP32-S3, 3,
 - **v0.2:** Getrennter Touch-Test und manuelle DTC-Schaltfläche: Seitenwechsel/Touch-Test lösen keine OBD-Abfragen aus. 
 - **v0.2:** WLAN-/ELM-Verbindungsanzeige und TX-/Timeout-/Antwortpuffer-Zähler (am Pi-Simulator bestätigt; echter Adapter nicht geprüft).
 - Gespeicherte (03), ausstehende (07) und permanente (0A) DTCs **zunächst als rohe Adapterantwort**, noch ohne vollständigen Multi-ECU-/ISO-TP-Dekoder.
-- Diagnose-Protokollzeilen über USB-Serial. **Noch keine persistente MicroSD-Aufzeichnung.**
+- Diagnose-Protokollzeilen über USB-Serial und (v0.3, im Verbindungsmodus) als CSV auf MicroSD: `/obd/S####_P##.csv`, eine Datei pro Sitzung, neue Teildatei ab 4 MB, Schreibpuffer jede Sekunde auf die Karte, Status auf der INFO-Seite. Noch keine Uhrzeit (keine RTC): Zeilen tragen Millisekunden seit Start.
 - Zentrale, geschlossene Allowlist; keine Mode 04/08, keine UDS-Schreibdienste, keine frei eingebbaren CAN-/ELM-Befehle, kein Terminal.
 
 ## Sicherheit
@@ -101,7 +101,7 @@ KOEO/KOER-Basisstatus und eine scrollbare **ALLE PIDS**-Seite.
 Manuelle Diagnoseansichten bieten Readiness/HU-AU-Vorcheck,
 Freeze-Frame-DTC, Mode-06-Aussetzerwerte sowie konservative DTC-Dekodierung
 und ausgewählte M272-Hinweise.
-`CSV,`-Messzeilen erscheinen **nur über USB-Serial**, noch nicht als SD-Datei.
+`CSV,`-Messzeilen erscheinen über USB-Serial und zusätzlich als SD-Datei, wenn eine Karte steckt.
 
 **Phase 2 im Entwicklungsbranch:** Die passive Leerlauf-/2500-rpm-Fuel-Trim-
 Testführung ist mit frischen Messwerten, Stabilitätsprüfungen und
@@ -115,7 +115,7 @@ ist am Board gegen den Pi-Simulator geprüft (alle vier Fixtures,
 2026-10-11), aber **nicht an einem echten ELM327/Steuergerät**;
 siehe [ISO-TP-DTC-Labortest](docs/ISO-TP-DTC-LAB-TEST.md).
 Die vollstaendige CAN-/UDS-Mehrsteuergeraete-Dekodierung,
-alle M272-Erklärungstexte, persistente CSV-Speicherung, ein
+alle M272-Erklärungstexte, Uhrzeit (RTC) im SD-Log, ein
 Read-only-Terminal und die gesamte Android-Timeout-/Resync-Logik
 sind noch nicht übernommen. Ein Fahrzeugtest ist nicht freigegeben.
 

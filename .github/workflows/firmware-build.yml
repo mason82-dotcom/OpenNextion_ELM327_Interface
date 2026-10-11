@@ -31,6 +31,8 @@ jobs:
           /tmp/obd-fuel-trim-test
           g++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/ObdDisplay tests/test_poll_scheduler.cpp -o /tmp/obd-poll-scheduler-test
           /tmp/obd-poll-scheduler-test
+          g++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/ObdDisplay tests/test_sd_log_format.cpp -o /tmp/obd-sd-log-test
+          /tmp/obd-sd-log-test
           python3 -m unittest discover -s tests -p 'test_*.py' -v
 
   firmware:
