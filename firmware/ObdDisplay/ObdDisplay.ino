@@ -47,6 +47,8 @@ static constexpr uint32_t COMMAND_GAP_MS = 25;
 static constexpr uint16_t BUF_LINES = 40;
 static constexpr uint32_t CMD_TIMEOUT_MS = 1700;
 static constexpr uint32_t PROTOCOL_SEARCH_TIMEOUT_MS = 12000;
+// WiFiClient::connect blocks the UI; a LAN TCP handshake needs far less.
+static constexpr int32_t ADAPTER_CONNECT_TIMEOUT_MS = 1000;
 
 Arduino_DataBus *bus = new Arduino_HWSPI(
     LCD_DC_PIN, LCD_CS_PIN, LCD_SCLK_PIN, LCD_MOSI_PIN, LCD_MISO_PIN, &SPI, true);
@@ -92,6 +94,7 @@ static obd_trim::Test trimTest;
 static uint32_t lastTrimUi=0;
 static obd_trim::Stage lastTrimRenderedStage=obd_trim::Stage::Idle;
 static uint8_t trimPollIndex=0;
+static void cancelTrimForOtherDiagnostic();
 #endif
 
 static void resetPanel() {
@@ -616,7 +619,13 @@ static bool pidSupported(uint8_t pid) {
 
 static bool initAdapter() {
   if (WiFi.status() != WL_CONNECTED) return false;
-  if (!adapter.connect(ELM_HOST, ELM_PORT, 1800)) return false;
+#if defined(OBD_LAB_BUILD)
+  lv_label_set_text(linkText, "LAB-Simulator: verbinde...");
+#else
+  lv_label_set_text(linkText, "ELM327: verbinde...");
+#endif
+  uiTick(); // render the hint before the blocking TCP connect
+  if (!adapter.connect(ELM_HOST, ELM_PORT, ADAPTER_CONNECT_TIMEOUT_MS)) return false;
   const Command setup[] = {
       Command::AdapterReset, Command::AdapterEchoOff, Command::AdapterLinesOff,
       Command::AdapterSpacesOff, Command::AdapterHeadersOff, Command::AdapterAutoProtocol};
@@ -917,6 +926,18 @@ static void scanInspectionStep() {
       Command::ClearDistance,Command::FreezeDtc,Command::StoredDtcs,
       Command::PendingDtcs,Command::PermanentDtcs};
   if (inspectionStep>=8) {inspectionRequested=false;return;}
+  if (inspectionStep<=3) {
+    // Mode 01 steps: only ask for PIDs the ECU announced in 0100/0120.
+    static const uint8_t stepPids[]={0x01,0x21,0x30,0x31};
+    static const char *stepNames[]={
+        "Readiness","km mit MIL","Warmlaeufe nach Reset","km nach Reset"};
+    if (!pidSupported(stepPids[inspectionStep])) {
+      inspectionReport+=String(stepNames[inspectionStep])+": von ECU nicht unterstuetzt\n";
+      lv_label_set_text(inspectionText,inspectionReport.c_str());
+      ++inspectionStep;
+      return;
+    }
+  }
   const Command c=commands[inspectionStep];
   String response;
   const uint32_t generation=diagGeneration;

@@ -124,7 +124,8 @@ auf dem Display getestet werden kann.
 
 ## Geplante Ausbaustufen
 
-1. **v0.1**: Display-/Touch-Bring-up, geschlossene Read-only-Allowlist, Basis-PIDs, Roh-DTCs und RPM-Chart (Offline-Display und Touch real geprüft).\n2. **v0.2 UI**: vier Touchseiten, dunkles Diagramm und Verbindungsdiagnose (Offline- und Pi-Simulator-LAB-Boardtest bestätigt).
+1. **v0.1**: Display-/Touch-Bring-up, geschlossene Read-only-Allowlist, Basis-PIDs, Roh-DTCs und RPM-Chart (Offline-Display und Touch real geprüft).
+2. **v0.2 UI**: vier Touchseiten, dunkles Diagramm und Verbindungsdiagnose (Offline- und Pi-Simulator-LAB-Boardtest bestätigt).
 3. **Weiterer v0.2 Diagnosestack**: ISO-TP-/Multi-ECU-Parser, vollständige DTC-Dekodierung, Freeze-Frames, Mode-01-PID-Erkennung, Timeout-/Reconnect-Härtung und Parser-Fuzzing.
 4. **v0.3**: MicroSD-CSV mit RTC-Zeit, Rotationsprinzip, Stromausfall-Schutz, Messintervalle und Export; Diagnoseprofile.
 5. **v0.4**: Zusätzliche Lesedaten (Fuel Trims, MAF, MAP, Readiness, Mode 06) und M272-spezifische Auswertung, sofern ECU unterstützt.

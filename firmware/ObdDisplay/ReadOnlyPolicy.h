@@ -27,13 +27,13 @@ enum class Command : std::uint8_t {
   Warmups,
   ClearDistance,
   FreezeDtc,
-  MisfireSupport,
   MisfireCyl1,
   MisfireCyl2,
   MisfireCyl3,
   MisfireCyl4,
   MisfireCyl5,
-  MisfireCyl6
+  MisfireCyl6,
+  CommandCount  // sentinel, not a command
 };
 
 constexpr bool isVehicleRead(Command command) {
@@ -64,7 +64,6 @@ constexpr bool isVehicleRead(Command command) {
     case Command::Warmups:
     case Command::ClearDistance:
     case Command::FreezeDtc:
-    case Command::MisfireSupport:
     case Command::MisfireCyl1:
     case Command::MisfireCyl2:
     case Command::MisfireCyl3:
@@ -111,7 +110,6 @@ constexpr const char* wireCommand(Command command) {
     case Command::Warmups: return "0130";
     case Command::ClearDistance: return "0131";
     case Command::FreezeDtc: return "020200";
-    case Command::MisfireSupport: return "06A0";
     case Command::MisfireCyl1: return "06A2";
     case Command::MisfireCyl2: return "06A3";
     case Command::MisfireCyl3: return "06A4";
@@ -124,4 +122,58 @@ constexpr const char* wireCommand(Command command) {
     default: return nullptr;
   }
 }
+
+// Compile-time audit of every wire string. Adapter commands must be one of
+// the exact AT setup strings; vehicle reads must be uppercase hex in one of
+// the read-only service shapes: 01PP, 020200 (freeze frame 0), 03/07/0A,
+// 06MM. Anything else (04/08/14, UDS 1x/2x/3x, ATSH, ATMA, CR/LF) fails.
+constexpr bool sameText(const char *a, const char *b) {
+  while (*a && *a == *b) { ++a; ++b; }
+  return *a == *b;
+}
+constexpr std::uint8_t textLength(const char *s) {
+  std::uint8_t n = 0;
+  while (s[n] && n < 16) ++n;
+  return n;
+}
+constexpr bool upperHex(const char *s) {
+  for (; *s; ++s)
+    if (!((*s >= '0' && *s <= '9') || (*s >= 'A' && *s <= 'F'))) return false;
+  return true;
+}
+constexpr bool allowedAdapterWire(const char *w) {
+  constexpr const char *setup[] = {
+      "ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATSP0", "ATDPN"};
+  for (const char *a : setup)
+    if (sameText(w, a)) return true;
+  return false;
+}
+constexpr bool allowedVehicleWire(const char *w) {
+  if (!w || !upperHex(w)) return false;
+  const std::uint8_t n = textLength(w);
+  if (n < 2) return false;
+  if (w[0] != '0') return false;
+  switch (w[1]) {
+    case '1': return n == 4;                 // Mode 01 current data
+    case '2': return sameText(w, "020200");  // Mode 02 frame 00, PID 02 only
+    case '3': case '7': case 'A': return n == 2;  // DTC lists
+    case '6': return n == 4;                 // Mode 06 on-board monitor
+    default: return false;
+  }
+}
+constexpr bool allowedWire(Command command) {
+  const char *w = wireCommand(command);
+  if (!w) return false;
+  return isVehicleRead(command) ? allowedVehicleWire(w)
+                                : allowedAdapterWire(w);
+}
+constexpr bool everyCommandAllowed() {
+  for (unsigned i = 0; i < static_cast<unsigned>(Command::CommandCount); ++i)
+    if (!allowedWire(static_cast<Command>(i))) return false;
+  return true;
+}
+static_assert(everyCommandAllowed(),
+              "ReadOnlyPolicy: a wire command is outside the read-only shapes");
+static_assert(wireCommand(Command::CommandCount) == nullptr,
+              "ReadOnlyPolicy: sentinel must not map to a wire command");
 } // namespace obd_policy

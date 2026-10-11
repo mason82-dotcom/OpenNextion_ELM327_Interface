@@ -35,6 +35,23 @@ class AdapterInitOrderTest(unittest.TestCase):
         self.assertGreaterEqual(int(match.group(1)), 10000)
 
 
+class AdapterConnectTest(unittest.TestCase):
+    def test_connect_shows_hint_and_blocks_briefly(self):
+        init = section("static bool initAdapter()", "static String trimNumber(")
+        self.assertLess(init.index("uiTick();"), init.index("adapter.connect("))
+        self.assertIn("ADAPTER_CONNECT_TIMEOUT_MS)", init)
+        match = re.search(r"ADAPTER_CONNECT_TIMEOUT_MS = (\d+);", SRC)
+        self.assertLessEqual(int(match.group(1)), 1000)
+
+
+class InspectionPidMaskTest(unittest.TestCase):
+    def test_unsupported_mode01_steps_are_not_sent(self):
+        body = section("static void scanInspectionStep()", "static void scanMisfireStep()")
+        self.assertIn("stepPids[]={0x01,0x21,0x30,0x31}", body)
+        skip = body.index("if (!pidSupported(stepPids[inspectionStep]))")
+        self.assertLess(skip, body.index("transact("))
+
+
 class ScanGenerationTest(unittest.TestCase):
     def test_every_scan_step_discards_superseded_replies(self):
         for start, end in (
