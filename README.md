@@ -103,8 +103,13 @@ Freeze-Frame-DTC, Mode-06-Aussetzerwerte sowie konservative DTC-Dekodierung
 und ausgewählte M272-Hinweise.
 `CSV,`-Messzeilen erscheinen **nur über USB-Serial**, noch nicht als SD-Datei.
 
+**Phase 2 im Entwicklungsbranch:** Die passive Leerlauf-/2500-rpm-Fuel-Trim-
+Testführung ist mit frischen Messwerten, Stabilitätsprüfungen und
+Ergebnisbericht implementiert. **Noch nicht auf Hardware getestet.**
+Anleitung: [Fuel-Trim-Labortest](docs/FUEL-TRIM-LAB-TEST.md).
+
 **Nicht gleichzusetzen mit vollständiger Android-Funktionsgleichheit:**
-Die mehrphasige Fuel-Trim-Testführung, volle ISO-TP-Multiframe-Dekodierung,
+Die volle ISO-TP-Multiframe-Dekodierung,
 alle M272-Erklärungstexte, persistente CSV-Speicherung, ein
 Read-only-Terminal und die gesamte Android-Timeout-/Resync-Logik
 sind noch nicht übernommen. Ein Fahrzeugtest ist nicht freigegeben.
