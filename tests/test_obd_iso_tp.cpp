@@ -53,6 +53,18 @@ int main(){
     auto v=obd_isotp::parseDtcs(raw,0x43,DtcEncoding::Can);
     assert(v.malformed);
   }
+  // A valid partial reply plus an ELM transport error is not success.
+  const auto linkErr=obd_isotp::parseDtcs(
+      "43 01 01 71\nBUFFER FULL",0x43,DtcEncoding::Can);
+  assert(linkErr.malformed);
+  const auto mixedHeader=obd_isotp::parseDtcs(
+      "43 01 01 71\n7E8 10 0A 43 04 01 71 03 01",
+      0x43,DtcEncoding::Can);
+  assert(mixedHeader.malformed);
+  const auto header29=obd_isotp::parseDtcs(
+      "18DAF110 10 0A 43 04 01 71 03 01",0x43,DtcEncoding::Can);
+  assert(header29.malformed);
+
   auto noData=obd_isotp::parseDtcs("NO DATA",0x43,DtcEncoding::Can);
   assert(!noData.gotAnswer&&!noData.malformed);
   auto wrongHeader=obd_isotp::parseDtcs(
