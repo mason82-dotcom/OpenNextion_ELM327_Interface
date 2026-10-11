@@ -52,6 +52,31 @@ class InspectionPidMaskTest(unittest.TestCase):
         self.assertLess(skip, body.index("transact("))
 
 
+class DtcScanSummaryTest(unittest.TestCase):
+    """Regression: codes in 03 were followed by "Keine DTCs" from empty 0A."""
+
+    def setUp(self):
+        self.body = section("static void scanOneDtcMode()", "static void scanInspectionStep()")
+
+    def test_status_is_summarised_only_after_all_modes(self):
+        self.assertIn("dtcScanCodes += static_cast<uint16_t>(dtcs.count);", self.body)
+        final = self.body.index("dtcScanRequested = false;\n  // Undecodable")
+        for text in ('"Keine DTCs"', '"%u Codes -> DETAILS"', '"RAW -> DETAILS"'):
+            with self.subTest(text=text):
+                self.assertEqual(self.body.count(text), 1)
+                self.assertGreater(self.body.index(text), final)
+
+    def test_undecodable_mode_is_never_reported_as_empty(self):
+        tail = self.body[self.body.index("// Undecodable"):]
+        self.assertLess(tail.index("dtcScanUndecodable"), tail.index('"Keine DTCs"'))
+        self.assertLess(tail.index("dtcScanCodes>0"), tail.index('"Keine DTCs"'))
+
+    def test_new_scan_resets_summary(self):
+        handler = section("static void onScanButton(", "static void renderTrimPage();")
+        self.assertIn("dtcScanCodes = 0;", handler)
+        self.assertIn("dtcScanUndecodable = false;", handler)
+
+
 class ScanGenerationTest(unittest.TestCase):
     def test_every_scan_step_discards_superseded_replies(self):
         for start, end in (

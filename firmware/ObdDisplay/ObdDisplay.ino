@@ -87,6 +87,10 @@ static uint8_t dtcIndex = 0;
 // cancel a diagnostic while a reply is still pending. Each such action bumps
 // the generation; a reply sent under an older generation is discarded.
 static uint32_t diagGeneration = 0;
+// Summary over all three DTC modes of one scan; the status line must not
+// report "keine" just because the last mode (0A) happened to be empty.
+static uint16_t dtcScanCodes = 0;
+static bool dtcScanUndecodable = false;
 static String dtcReport;
 static uint32_t txCount = 0, timeoutCount = 0, inputErrorCount = 0;
 static uint32_t lastLatencyMs = 0, lastStatsUi = 0, statsTxCount = 0;
@@ -217,6 +221,8 @@ static void onScanButton(lv_event_t *event) {
   inspectionRequested = false; misfireRequested = false;
   cancelTrimForOtherDiagnostic();
   ++diagGeneration;
+  dtcScanCodes = 0;
+  dtcScanUndecodable = false;
   dtcScanRequested = true;
   dtcIndex = 0;
 #if defined(OBD_LAB_BUILD)
@@ -905,19 +911,33 @@ static void scanOneDtcMode() {
     String preview=answer.substring(0,30);
     lv_label_set_text_fmt(dtcModeText[dtcIndex],"%s: RAW %s",
                           names[dtcIndex],preview.c_str());
-    lv_label_set_text(scanText,"RAW -> DETAILS");
+    dtcScanUndecodable = true;
   } else if (dtcs.count==0) {
     lv_label_set_text_fmt(dtcModeText[dtcIndex],"%s: keine",names[dtcIndex]);
-    lv_label_set_text(scanText,"Keine DTCs");
   } else {
-    lv_label_set_text_fmt(dtcModeText[dtcIndex],"%s: %s (+%u)",
-        names[dtcIndex],dtcs.entries[0].code,(unsigned)(dtcs.count-1));
-    lv_label_set_text(scanText,"Codes -> DETAILS");
+    if (dtcs.count>1)
+      lv_label_set_text_fmt(dtcModeText[dtcIndex],"%s: %s (+%u)",
+          names[dtcIndex],dtcs.entries[0].code,(unsigned)(dtcs.count-1));
+    else
+      lv_label_set_text_fmt(dtcModeText[dtcIndex],"%s: %s",
+          names[dtcIndex],dtcs.entries[0].code);
+    dtcScanCodes += static_cast<uint16_t>(dtcs.count);
     for (std::size_t i=0;i<dtcs.count;++i)
       Serial.printf("DTC,%s,%s\n",names[dtcIndex],dtcs.entries[i].code);
   }
   ++dtcIndex;
-  if (dtcIndex == 3) dtcScanRequested = false;
+  if (dtcIndex < 3) {
+    lv_label_set_text_fmt(scanText,"Lese %s...",names[dtcIndex]);
+    return;
+  }
+  dtcScanRequested = false;
+  // Undecodable beats "keine": an unreadable mode may hide codes.
+  if (dtcScanUndecodable)
+    lv_label_set_text(scanText,"RAW -> DETAILS");
+  else if (dtcScanCodes>0)
+    lv_label_set_text_fmt(scanText,"%u Codes -> DETAILS",(unsigned)dtcScanCodes);
+  else
+    lv_label_set_text(scanText,"Keine DTCs");
 }
 
 static void scanInspectionStep() {
