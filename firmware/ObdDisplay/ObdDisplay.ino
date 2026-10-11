@@ -15,6 +15,7 @@
 #include "ObdResponseParser.h"
 #include "ObdPidCatalog.h"
 #include "ObdDiagnostics.h"
+#include "FuelTrimTest.h"
 
 #if defined(OBD_LAB_BUILD)
 #if __has_include("Config.h")
@@ -54,8 +55,9 @@ static lv_disp_drv_t dispDriver;
 static lv_obj_t *statusText, *rpmText, *coolantText, *speedText, *scanText, *touchText;
 static lv_obj_t *rpmChart;
 static lv_chart_series_t *rpmSeries;
-static lv_obj_t *pages[7], *navButtons[4], *linkText, *statsText;
+static lv_obj_t *pages[8], *navButtons[4], *linkText, *statsText;
 static lv_obj_t *extraDataText, *engineStateText, *inspectionText, *misfireText;
+static lv_obj_t *trimStageText, *trimReportText;
 static lv_obj_t *dtcModeText[3];
 static uint32_t tapCount = 0;
 
@@ -75,6 +77,8 @@ static uint8_t inspectionStep = 0, misfireStep = 0;
 static String inspectionReport, misfireReport;
 static uint8_t dtcIndex = 0;
 static uint32_t txCount = 0, timeoutCount = 0, inputErrorCount = 0;
+static obd_trim::Test trimTest;
+static uint32_t lastTrimUi=0;
 #endif
 
 static void resetPanel() {
@@ -160,8 +164,8 @@ static lv_obj_t* makeButton(lv_obj_t *parent, const char *title, int x, int y,
 }
 
 static void showPage(uint8_t page) {
-  if (page >= 7) return;
-  for (uint8_t i = 0; i < 7; ++i) {
+  if (page >= 8) return;
+  for (uint8_t i = 0; i < 8; ++i) {
     if (i == page) lv_obj_clear_flag(pages[i], LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(pages[i], LV_OBJ_FLAG_HIDDEN);
     if (i >= 4) continue;
@@ -191,6 +195,7 @@ static void onScanButton(lv_event_t *event) {
     return;
   }
   inspectionRequested = false; misfireRequested = false;
+  cancelTrimForOtherDiagnostic();
   dtcScanRequested = true;
   dtcIndex = 0;
   lv_label_set_text(scanText, "DTC-Leseabfrage angefordert");
@@ -198,6 +203,56 @@ static void onScanButton(lv_event_t *event) {
 #endif
 }
 
+
+#if OBD_CONNECTED_BUILD
+static void renderTrimPage();
+static void cancelTrimForOtherDiagnostic() {
+  if(!trimTest.running()) return;
+  trimTest.cancel();
+  if(trimStageText) lv_label_set_text(trimStageText,"Trim-Test abgebrochen");
+  if(trimReportText) lv_label_set_text(trimReportText,
+      "Test abgebrochen, weil eine andere Diagnose gestartet wurde.");
+}
+#endif
+static void onTrimStart(lv_event_t *event) {
+  if (lv_event_get_code(event)!=LV_EVENT_CLICKED) return;
+  showPage(7);
+#if OBD_CONNECTED_BUILD
+  if(!adapterReady) {
+    lv_label_set_text(trimStageText,"Keine Verbindung zum Adapter");
+    return;
+  }
+  const uint8_t required[]={0x06,0x07,0x08,0x09,0x0C,0x0D};
+  for(const uint8_t pid:required) {
+    if(!obd_pids::supported(pid,pidMasks)){
+      lv_label_set_text(trimStageText,"ECU: erforderlicher PID fehlt");
+      lv_label_set_text(trimReportText,
+          "RPM, Tempo und alle vier Fuel Trims muessen unterstuetzt sein. "
+          "Kein Test gestartet.");
+      return;
+    }
+  }
+  // This is purely a UI/readout action. It NEVER sends a vehicle command.
+  // No other on-demand scan may monopolize the PID poller while sampling.
+  inspectionRequested=false;
+  misfireRequested=false;
+  dtcScanRequested=false;
+  trimTest.start();
+  renderTrimPage();
+#else
+  lv_label_set_text(trimStageText,"OFFLINE: keine Messung moeglich");
+#endif
+}
+static void onTrimCancel(lv_event_t *event) {
+  if(lv_event_get_code(event)!=LV_EVENT_CLICKED)return;
+#if OBD_CONNECTED_BUILD
+  trimTest.cancel();
+  lv_label_set_text(trimStageText,"Fuel-Trim-Test gestoppt");
+  lv_label_set_text(trimReportText,"Test abgebrochen. Erneut START druecken.");
+#else
+  lv_label_set_text(trimStageText,"OFFLINE: keine Messung aktiv");
+#endif
+}
 static void onMorePidButton(lv_event_t *event) {
   if (lv_event_get_code(event)==LV_EVENT_CLICKED) showPage(4);
 }
@@ -206,6 +261,7 @@ static void onInspectionButton(lv_event_t *event) {
   showPage(5);
 #if OBD_CONNECTED_BUILD
   if (!adapterReady) {lv_label_set_text(inspectionText,"Keine Verbindung");return;}
+  cancelTrimForOtherDiagnostic();
 #if defined(OBD_LAB_BUILD)
   inspectionReport="HU/AU-Vorabcheck: SIMULIERTE OBD-Daten\n";
 #else
@@ -223,6 +279,7 @@ static void onMode06Button(lv_event_t *event) {
   showPage(6);
 #if OBD_CONNECTED_BUILD
   if (!adapterReady) {lv_label_set_text(misfireText,"Keine Verbindung");return;}
+  cancelTrimForOtherDiagnostic();
 #if defined(OBD_LAB_BUILD)
   misfireReport="M272 Aussetzer / Mode 06 (LAB-SIMULATION)\n";
 #else
@@ -245,7 +302,7 @@ static void buildUi() {
 
   label(screen, "OBD DIAG  /  READ-ONLY", 11, 11, 295, CYAN);
   statusText = label(screen, "Initialisierung...", 11, 38, 296, MUTED);
-  for (uint8_t i = 0; i < 7; ++i) {
+  for (uint8_t i = 0; i < 8; ++i) {
     pages[i] = lv_obj_create(screen);
     lv_obj_set_pos(pages[i], 0, 74);
     lv_obj_set_size(pages[i], 320, 349);
@@ -347,11 +404,13 @@ static void buildUi() {
   label(pages[4],"SENSOREN / FUEL TRIMS",12,3,165,CYAN);
   lv_obj_t *mode06Btn=makeButton(pages[4],"MODE 06",180,0,128,35);
   lv_obj_add_event_cb(mode06Btn,onMode06Button,LV_EVENT_CLICKED,nullptr);
-  lv_obj_t *pidPanel=makeCard(pages[4],12,44,296,250);
+  lv_obj_t *pidPanel=makeCard(pages[4],12,44,296,229);
   lv_obj_add_flag(pidPanel,LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_scroll_dir(pidPanel,LV_DIR_VER);
   extraDataText=label(pidPanel,"PIDs werden erkannt...",10,7,272,LIGHT);
-  engineStateText=label(pages[4],"Betriebszustand: noch unbekannt",12,308,295,MUTED);
+  engineStateText=label(pages[4],"Betriebszustand: noch unbekannt",12,280,295,MUTED);
+  lv_obj_t *trimOpen=makeButton(pages[4],"TRIM-TEST",178,313,130,32);
+  lv_obj_add_event_cb(trimOpen,onTrimStart,LV_EVENT_CLICKED,nullptr);
   label(pages[5],"HU/AU-VORCHECK / OBD",12,3,296,CYAN);
   label(pages[5],"Nur Indikation, keine amtliche Pruefung",12,28,296,MUTED);
   lv_obj_t *insPanel=makeCard(pages[5],12,63,296,276);
@@ -364,6 +423,27 @@ static void buildUi() {
   lv_obj_add_flag(misPanel,LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_scroll_dir(misPanel,LV_DIR_VER);
   misfireText=label(misPanel,"Mode 06 ueber ALLE PIDS starten",9,10,274,LIGHT);
+
+
+  // Phase-controlled passive Fuel-Trim check, no motor/throttle commands.
+  label(pages[7],"FUEL-TRIM-TEST",12,3,295,CYAN);
+#if defined(OBD_LAB_BUILD)
+  label(pages[7],"LAB-SIMULATION / keine ECU-Messwerte",12,27,295,MUTED);
+#else
+  label(pages[7],"Passiv: nur lesen, Drehzahl manuell",12,27,295,MUTED);
+#endif
+  trimStageText=label(pages[7],"Bereit: START antippen",12,56,293,LIGHT);
+  lv_obj_t *trimPanel=makeCard(pages[7],12,108,296,176);
+  lv_obj_add_flag(trimPanel,LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scroll_dir(trimPanel,LV_DIR_VER);
+  trimReportText=label(trimPanel,
+      "Nur bei stehendem Fahrzeug; Motorzustand und "
+      "Drehzahl werden automatisch aus PIDs ermittelt. "
+      "Keine Stellgliedansteuerung.",9,9,270,LIGHT);
+  lv_obj_t *trimStart=makeButton(pages[7],"START",12,296,142,39);
+  lv_obj_add_event_cb(trimStart,onTrimStart,LV_EVENT_CLICKED,nullptr);
+  lv_obj_t *trimCancel=makeButton(pages[7],"ABBRUCH",166,296,142,39);
+  lv_obj_add_event_cb(trimCancel,onTrimCancel,LV_EVENT_CLICKED,nullptr);
 
   const char *tabs[4] = {"LIVE", "GRAPH", "DTC", "INFO"};
   for (uint8_t i = 0; i < 4; ++i) {
@@ -429,6 +509,10 @@ static void markDisconnected(const char *reason) {
   dtcScanRequested = false;
   inspectionRequested = false;
   misfireRequested = false;
+  trimTest.cancel();
+  if(trimStageText)lv_label_set_text(trimStageText,"Fuel-Trim-Test: Verbindung verloren");
+  if(trimReportText)lv_label_set_text(trimReportText,
+      "Vorherige Messung ungueltig. Vollstaendig neu starten.");
   dtcIndex = inspectionStep = misfireStep = 0;
   inspectionReport = "";
   misfireReport = "";
@@ -588,6 +672,7 @@ static void pollOnePid() {
     return;
   pidValues[index]=value;
   pidValid[index]=true;
+  trimTest.sample(p.pid,value,millis());
   if (p.pid==0x0C) {
     rpm=(int)value;
     lv_label_set_text_fmt(rpmText, "%d rpm", rpm);
@@ -813,6 +898,12 @@ void loop() {
     else if (misfireRequested) scanMisfireStep();
     else if (dtcScanRequested) scanOneDtcMode();
     else pollOnePid();
+  }
+  if(trimTest.running()) trimTest.tick(millis());
+  if(millis()-lastTrimUi>=500) {
+    lastTrimUi=millis();
+    if(trimTest.running() || trimTest.stage()==obd_trim::Stage::Done ||
+       trimTest.stage()==obd_trim::Stage::Failed) renderTrimPage();
   }
 #endif
   delay(5);
