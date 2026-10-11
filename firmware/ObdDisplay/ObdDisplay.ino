@@ -79,6 +79,10 @@ static bool inspectionRequested = false, misfireRequested = false;
 static uint8_t inspectionStep = 0, misfireStep = 0;
 static String inspectionReport, misfireReport;
 static uint8_t dtcIndex = 0;
+// transact() keeps LVGL alive, so touch callbacks can start, replace or
+// cancel a diagnostic while a reply is still pending. Each such action bumps
+// the generation; a reply sent under an older generation is discarded.
+static uint32_t diagGeneration = 0;
 static String dtcReport;
 static uint32_t txCount = 0, timeoutCount = 0, inputErrorCount = 0;
 static obd_trim::Test trimTest;
@@ -206,6 +210,7 @@ static void onScanButton(lv_event_t *event) {
   }
   inspectionRequested = false; misfireRequested = false;
   cancelTrimForOtherDiagnostic();
+  ++diagGeneration;
   dtcScanRequested = true;
   dtcIndex = 0;
 #if defined(OBD_LAB_BUILD)
@@ -254,6 +259,7 @@ static void onTrimStart(lv_event_t *event) {
   inspectionRequested=false;
   misfireRequested=false;
   dtcScanRequested=false;
+  ++diagGeneration;
   trimPollIndex=0;
   trimTest.start();
   renderTrimPage();
@@ -287,6 +293,7 @@ static void onInspectionButton(lv_event_t *event) {
 #endif
   lv_label_set_text(inspectionText,inspectionReport.c_str());
   inspectionRequested=true; misfireRequested=false; dtcScanRequested=false;
+  ++diagGeneration;
   inspectionStep=0;
 #else
   lv_label_set_text(inspectionText,"Offline: keine ECU-Daten");
@@ -305,6 +312,7 @@ static void onMode06Button(lv_event_t *event) {
 #endif
   lv_label_set_text(misfireText,misfireReport.c_str());
   misfireRequested=true; inspectionRequested=false; dtcScanRequested=false;
+  ++diagGeneration;
   misfireStep=0;
 #else
   lv_label_set_text(misfireText,"Offline: keine ECU-Daten");
@@ -545,6 +553,7 @@ static void markDisconnected(const char *reason) {
   if(trimReportText)lv_label_set_text(trimReportText,
       "Vorherige Messung ungueltig. Vollstaendig neu starten.");
   dtcIndex = inspectionStep = misfireStep = 0;
+  ++diagGeneration;
   inspectionReport = "";
   misfireReport = "";
   if (extraDataText) lv_label_set_text(extraDataText, "Keine Verbindung");
@@ -837,10 +846,12 @@ static void scanOneDtcMode() {
   const char *names[] = {"03 gespeichert", "07 ausstehend", "0A permanent"};
   if (dtcIndex >= 3) { dtcScanRequested = false; return; }
   String answer;
+  const uint32_t generation = diagGeneration;
   if (!transact(modes[dtcIndex], answer, 3500)) {
     markDisconnected("DTC: Timeout/Sync-Verlust");
     dtcScanRequested = false; return;
   }
+  if (generation != diagGeneration) return; // superseded during transact
   Serial.printf("DTC_RAW,%s,%s\n", names[dtcIndex], answer.c_str());
   const uint8_t responseMode[] = {0x43,0x47,0x4A};
   auto dtcs=obd_isotp::parseDtcs(answer.c_str(),responseMode[dtcIndex],dtcEncoding);
@@ -890,10 +901,12 @@ static void scanInspectionStep() {
   if (inspectionStep>=8) {inspectionRequested=false;return;}
   const Command c=commands[inspectionStep];
   String response;
+  const uint32_t generation=diagGeneration;
   if (!transact(c,response,3500)) {
     markDisconnected("HU/AU: Adapter-Synchronisation verloren");
     inspectionRequested=false; return;
   }
+  if (generation!=diagGeneration) return; // superseded during transact
   uint8_t data[2] = {};
   if (inspectionStep==0) {
     obd_diag::Readiness readiness;
@@ -962,10 +975,12 @@ static void scanMisfireStep() {
       Command::MisfireCyl1,Command::MisfireCyl2,Command::MisfireCyl3,
       Command::MisfireCyl4,Command::MisfireCyl5,Command::MisfireCyl6};
   String reply;
+  const uint32_t generation=diagGeneration;
   if(!transact(modes[misfireStep],reply,3500)){
     markDisconnected("Mode06: Adapter-Synchronisation verloren");
     misfireRequested=false;return;
   }
+  if(generation!=diagGeneration)return; // superseded during transact
   obd_diag::Misfire m;
   const uint8_t cyl=misfireStep+1;
   misfireReport+="Zyl. "+String(cyl)+" (B"+String(cyl<=3?1:2)+"): ";
