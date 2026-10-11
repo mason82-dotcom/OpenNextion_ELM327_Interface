@@ -755,7 +755,7 @@ static void pollOnePid() {
       rpm=-1;
       lv_label_set_text(rpmText,"-- rpm");
       if (engineStateText) lv_label_set_text(engineStateText,
-          "Motorstatus: Drehzahl derzeit nicht verfuegbar");
+          "RPM derzeit n/v");
     } else if (p.pid==0x05) {
       coolantC=-1000;
       lv_label_set_text(coolantText,"-- C");
@@ -779,8 +779,7 @@ static void pollOnePid() {
     lv_chart_set_next_value(rpmChart,rpmSeries,rpm);
     if (engineStateText)
       lv_label_set_text(engineStateText,
-        rpm==0 ? "KOEO: Zuendung EIN / Motor AUS; Trimwerte bedingt aussagekraeftig"
-               : "KOER: Motor laeuft");
+        rpm==0 ? "KOEO: Motor aus" : "KOER: Motor laeuft");
   } else if (p.pid==0x05) {
     coolantC=(int)value;
     lv_label_set_text_fmt(coolantText, "%d C", coolantC);
