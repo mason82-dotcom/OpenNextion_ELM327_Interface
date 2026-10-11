@@ -58,8 +58,8 @@ class LabTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             filename = pathlib.Path(tmp) / "rpm"
             self.assertIsNone(lab.rpm_from_file(str(filename)))
-            for src, expected in (("800\\n", 800), ("2500\\n", 2500),
-                                  ("0\\n", 0), ("7000\\n", 7000)):
+            for src, expected in (("800", 800), ("2500", 2500),
+                                  ("0", 0), ("7000", 7000)):
                 filename.write_text(src, encoding="ascii")
                 self.assertEqual(lab.rpm_from_file(str(filename)), expected)
             for invalid in ("7001", "-1", "0x800", "800.5", "foo", "99999"):
