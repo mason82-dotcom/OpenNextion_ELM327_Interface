@@ -105,7 +105,8 @@ und ausgewählte M272-Hinweise.
 
 **Phase 2 im Entwicklungsbranch:** Die passive Leerlauf-/2500-rpm-Fuel-Trim-
 Testführung ist mit frischen Messwerten, Stabilitätsprüfungen und
-Ergebnisbericht implementiert. **Noch nicht auf Hardware getestet.**
+Ergebnisbericht implementiert und am Display gegen den Pi-Simulator
+geprüft (2026-10-11). **Nicht an einem echten ELM327/Fahrzeug getestet.**
 Anleitung: [Fuel-Trim-Labortest](docs/FUEL-TRIM-LAB-TEST.md).
 
 **Nicht gleichzusetzen mit vollständiger Android-Funktionsgleichheit:**

@@ -1,9 +1,9 @@
 # Passiver Fuel-Trim-Test auf OpenNextion (Phase 2)
 
-**Implementiert im Entwicklungsbranch. Noch nicht am Display validiert.**
+**Stand 2026-10-11: am Display gegen den Pi-Simulator geprüft
+(siehe Boardtest unten). Kein Test an einem echten ELM327 oder Fahrzeug.**
 Vor einem erneuten Flash müssen die nativen Tests, die Python-Simulatortests
-und der ESP32-S3-LAB-Build erfolgreich sein. Der bereits geprüfte
-PID-/Reconnect-LAB-Stand bleibt bis dahin auf dem Gerät erhalten.
+und der ESP32-S3-LAB-Build erfolgreich sein.
 
 ## Ursprung und Ablauf
 
@@ -126,6 +126,28 @@ die freigegebenen Setup-Anfragen enthalten.
   Bericht ohne mindestens drei gültige LTFT-B1-Samples ist unzulässig.
 - Im Simulator-TCP-Terminal `Strg+C`: der Verbindungsverlust muss den
   laufenden Test als ungültig markieren, nicht weiterlaufen lassen.
+
+## Boardtest 2026-10-11
+
+ONX3248G035 mit Lab-Image `a5dca1d`, Pi-Simulator (`--rpm-file`,
+800 rpm → 2500 rpm nach der Leerlaufphase umgeschaltet):
+
+| | Leerlauf (20 s) | ca. 2500 rpm (15 s) |
+|---|---|---|
+| B1 STFT / LTFT / gesamt | 0,0 / 7,8 / 7,8 % | 0,0 / 7,8 / 7,8 % |
+| B2 STFT / LTFT / gesamt | 0,0 / 5,5 / 5,5 % | 0,0 / 5,5 / 5,5 % |
+| MAF / MAP | 5,00 g/s / 40 kPa | 5,00 g/s / 40 kPa |
+| frische Werte je Trim | 29–30 | 21–22 |
+
+Bericht „Messung abgeschlossen“, Hinweis „Keine eindeutige Abweichung
+>10% im Schema“ – passend zu den Fixture-Werten. 1223 Antworten,
+max. 151 ms Antwortzeit, kein Verbindungsabbruch.
+
+Zwei vorherige Läufe wurden korrekt als ungültig abgebrochen, weil
+einzelne Antworten wegen WLAN-Stromsparen (ESP32-Modem-Sleep, Pi
+`power_save on`) bis zu 1,6 s brauchten und das alte 1,7-s-Timeout
+die Sitzung beendete. Behoben mit `WiFi.setSleep(false)` und 2,5 s
+Timeout (`a5dca1d`); Ping danach Ø 8,7 ms / max. 28 ms.
 
 ## Was noch offen ist
 
