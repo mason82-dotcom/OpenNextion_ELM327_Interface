@@ -43,7 +43,7 @@ RESPONSES = {
 ADAPTER_COMMANDS = {"ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATSP0", "ATDPN"}
 
 
-def answer_for(command: str, fault_pid: str | None = None) -> str:
+def answer_for(command: str, fault_pid: str | None = None, rpm_override: int | None = None) -> str:
     """Return only fixture responses, never execute or forward a command."""
     command = command.strip().upper()
     if command == "ATZ":
@@ -55,6 +55,9 @@ def answer_for(command: str, fault_pid: str | None = None) -> str:
     if command == fault_pid and command in RESPONSES and command.startswith("01"):
         # Deliberately invalid PID response while keeping TCP connected.
         return "NO DATA"
+    if command == "010C" and rpm_override is not None:
+        raw = int(rpm_override) * 4
+        return f"41 0C {(raw >> 8) & 0xFF:02X} {raw & 0xFF:02X}"
     if command in RESPONSES:
         return RESPONSES[command]
     return "?"
@@ -76,6 +79,20 @@ def fault_pid_from_file(path: str | None) -> str | None:
     if len(value) == 4 and value.startswith("01") and value in RESPONSES:
         return value
     return None
+
+
+def rpm_from_file(path: str | None) -> int | None:
+    """Explicit LAB-only RPM override, reloaded on every simulator request."""
+    if not path:
+        return None
+    try:
+        value = Path(path).read_text(encoding="ascii").strip()
+    except (OSError, UnicodeError):
+        return None
+    if not value.isascii() or not value.isdecimal() or len(value) > 4:
+        return None
+    rpm = int(value)
+    return rpm if 0 <= rpm <= 7000 else None
 
 
 class ElmCrHandler(socketserver.BaseRequestHandler):
@@ -101,7 +118,8 @@ class ElmCrHandler(socketserver.BaseRequestHandler):
                             continue
                         print(f"[LAB] RX {cmd}", flush=True)
                         fault_pid = fault_pid_from_file(self.server.fault_file)
-                        reply = answer_for(cmd, fault_pid)
+                        rpm_override = rpm_from_file(self.server.rpm_file)
+                        reply = answer_for(cmd, fault_pid, rpm_override)
                         if reply == "NO DATA" and fault_pid == cmd:
                             print(f"[LAB] INJECT NO DATA {cmd} (TCP remains open)", flush=True)
                         if reply == "?":
@@ -135,12 +153,17 @@ def main():
     parser.add_argument("--port", type=int, default=35000)
     parser.add_argument("--fault-file", default=None,
                         help="optional local file containing a permitted Mode 01 PID; return NO DATA for it")
+    parser.add_argument("--rpm-file", default=None,
+                        help="optional local file with simulated RPM from 0..7000 (no vehicle access)")
     args = parser.parse_args()
     with Server((args.bind, args.port), ElmCrHandler) as server:
         server.fault_file = args.fault_file
+        server.rpm_file = args.rpm_file
         print(f"[LAB] ELM327 simulator listening on {args.bind}:{args.port}", flush=True)
         if server.fault_file:
             print("[LAB] PID fault injection enabled (inactive until file exists)", flush=True)
+        if server.rpm_file:
+            print("[LAB] RPM fixture override enabled (inactive until file exists)", flush=True)
         print("[LAB] No vehicle/OBD adapter required; Ctrl+C to stop", flush=True)
         try:
             server.serve_forever(poll_interval=0.2)
