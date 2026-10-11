@@ -134,14 +134,15 @@ inline obd_diag::DtcResult parseDtcs(const char *response,
       "FB ERROR","STOPPED","UNABLE TO CONNECT","BUS INIT","NO DATA"};
     for(const char *term:fatal)
       if(std::strstr(plain,term)){result.malformed=true;return;}
-    if(len>=3 && isHex(plain[0]) && isHex(plain[1]) &&
-       isHex(plain[2]) && std::strchr(plain,' ')){
-      // In this mode any 3-hex CAN ID followed by raw bytes is foreign
-      // to the ELM-length/indexed encoding. Do not mistake it for DTCs.
-      if((plain[0]=='7'||plain[0]=='6') && isHex(plain[3])){
-        result.malformed=true;return;
-      }
-    }
+    // Raw 11-bit or 29-bit CAN headers belong to ATH1 decoding,
+    // which this intentionally restricted ATH0 parser does not do.
+    bool header11 = len>=4 && plain[3]==' ';
+    for(std::size_t k=0;k<3 && header11;++k)
+      header11=isHex(plain[k]);
+    bool header29 = len>=9 && plain[8]==' ';
+    for(std::size_t k=0;k<8 && header29;++k)
+      header29=isHex(plain[k]);
+    if(header11 || header29){result.malformed=true;return;}
     const auto decoded=obd_diag::parseDtcs(plain,mode,encoding);
     absorb(result,decoded);
   };
