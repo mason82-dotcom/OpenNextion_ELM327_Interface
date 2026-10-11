@@ -109,7 +109,10 @@ Ergebnisbericht implementiert. **Noch nicht auf Hardware getestet.**
 Anleitung: [Fuel-Trim-Labortest](docs/FUEL-TRIM-LAB-TEST.md).
 
 **Nicht gleichzusetzen mit vollständiger Android-Funktionsgleichheit:**
-Die volle ISO-TP-Multiframe-Dekodierung,
+ISO-TP-Multiframe-Dekodierung fuer ELM-ATH0-Indexformat
+ist im Quellcode implementiert, aber **noch nicht am Board validiert**;
+siehe [ISO-TP-DTC-Labortest](docs/ISO-TP-DTC-LAB-TEST.md).
+Die vollstaendige CAN-/UDS-Mehrsteuergeraete-Dekodierung,
 alle M272-Erklärungstexte, persistente CSV-Speicherung, ein
 Read-only-Terminal und die gesamte Android-Timeout-/Resync-Logik
 sind noch nicht übernommen. Ein Fahrzeugtest ist nicht freigegeben.
