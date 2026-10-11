@@ -79,6 +79,7 @@ static uint8_t dtcIndex = 0;
 static uint32_t txCount = 0, timeoutCount = 0, inputErrorCount = 0;
 static obd_trim::Test trimTest;
 static uint32_t lastTrimUi=0;
+static obd_trim::Stage lastTrimRenderedStage=obd_trim::Stage::Idle;
 static uint8_t trimPollIndex=0;
 #endif
 
@@ -697,6 +698,7 @@ static void renderTrimPage() {
     }
   }
   lv_label_set_text(trimReportText,report.c_str());
+  lastTrimRenderedStage=stage;
 }
 static void updateExtraData() {
   if (!extraDataText) return;
@@ -1000,8 +1002,10 @@ void loop() {
   if(trimTest.running()) trimTest.tick(millis());
   if(millis()-lastTrimUi>=500) {
     lastTrimUi=millis();
-    if(trimTest.running() || trimTest.stage()==obd_trim::Stage::Done ||
-       trimTest.stage()==obd_trim::Stage::Failed) renderTrimPage();
+    // Completed reports are immutable; avoid repeated LVGL redraw/heap churn.
+    if(trimTest.running() || ((trimTest.stage()==obd_trim::Stage::Done ||
+        trimTest.stage()==obd_trim::Stage::Failed) &&
+        trimTest.stage()!=lastTrimRenderedStage)) renderTrimPage();
   }
 #endif
   delay(5);
