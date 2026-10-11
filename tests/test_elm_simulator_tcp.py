@@ -109,6 +109,19 @@ class SimulatorTcpTest(unittest.TestCase):
         self.sock.settimeout(3)
         self.assertEqual(exchange(self.sock, "ATDPN"), "ATDPN\rA0\r>")
 
+    def test_new_client_replaces_dead_session_immediately(self):
+        # Board reset during flashing: the old socket is never closed.
+        exchange(self.sock, "0100")
+        started = time.monotonic()
+        with socket.create_connection(self.address, timeout=3) as board:
+            board.settimeout(3)
+            self.assertIn("ELM327 LAB SIM v0.1", exchange(board, "ATZ"))
+            self.assertEqual(exchange(board, "ATE0"), "ATE0\rOK\r>")
+            self.assertEqual(exchange(board, "ATDPN"), "A0\r>")
+        self.assertLess(time.monotonic() - started, 2.0)
+        # The replaced session was shut down by the simulator.
+        self.assertEqual(self.sock.recv(64), b"")
+
     def test_first_obd_request_is_delayed_by_protocol_search(self):
         self.server.search_delay = 0.3
         try:

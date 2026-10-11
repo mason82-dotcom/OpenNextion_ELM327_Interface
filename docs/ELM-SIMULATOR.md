@@ -34,7 +34,9 @@ standardmäßig 1,5 s (`--search-delay 0` bis `10`); danach meldet
 `ATDPN` `A6`. `ATZ` und `ATSP0` setzen das zurück. Die Firmware liest
 `ATDPN` deshalb erst nach `0100` und wartet auf diese erste Antwort
 bis zu 12 s. Der Simulator bedient wie ein WLAN-Dongle nur einen
-Client gleichzeitig.
+Client gleichzeitig; ein neuer Client (z. B. das Board nach Flashen
+oder Reset) ersetzt die alte Sitzung sofort, statt bis zu 35 s auf
+der toten Verbindung zu warten.
 
 **Antwortzeit:** Jede Antwort kommt nach `--reply-delay` Sekunden
 (Standard 0,04 s, typisch für CAN über einen WLAN-ELM327; 0 bis 2 s).

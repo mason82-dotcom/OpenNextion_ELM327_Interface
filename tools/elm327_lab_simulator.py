@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Labor-only ELM327 TCP simulator. NO vehicle, Bluetooth, CAN or USB access."""
 import argparse
+import socket
 import socketserver
+import threading
 import time
 from pathlib import Path
 
@@ -162,6 +164,7 @@ class ElmCrHandler(socketserver.BaseRequestHandler):
         protocol = ProtocolSearch()
         buf = bytearray()
         peer = self.client_address[0]
+        self.server.take_over(self.request)
         print(f"[LAB] client {peer} connected", flush=True)
         try:
             while True:
@@ -207,11 +210,41 @@ class ElmCrHandler(socketserver.BaseRequestHandler):
         except (TimeoutError, ConnectionError, OSError):
             pass
         finally:
+            self.server.release(self.request)
             print(f"[LAB] client {peer} disconnected", flush=True)
 
 
-class Server(socketserver.TCPServer):
+class Server(socketserver.ThreadingTCPServer):
+    """One active client, newest wins.
+
+    An ESP32 that resets (flash, power cycle) never closes its old TCP
+    session. A strictly sequential server then sat up to 35 s on the dead
+    socket while the board's new connection waited in the backlog and its
+    ATZ timed out. Replacing the previous client keeps one-command-at-a-time
+    semantics and lets the reconnected board in immediately.
+    """
     allow_reuse_address = True
+    daemon_threads = True
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._lock = threading.Lock()
+        self._active = None
+
+    def take_over(self, sock):
+        with self._lock:
+            previous, self._active = self._active, sock
+        if previous is not None:
+            print("[LAB] new client replaces previous session", flush=True)
+            try:
+                previous.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def release(self, sock):
+        with self._lock:
+            if self._active is sock:
+                self._active = None
 
 
 def main():
