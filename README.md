@@ -110,7 +110,8 @@ Anleitung: [Fuel-Trim-Labortest](docs/FUEL-TRIM-LAB-TEST.md).
 
 **Nicht gleichzusetzen mit vollständiger Android-Funktionsgleichheit:**
 ISO-TP-Multiframe-Dekodierung fuer ELM-ATH0-Indexformat
-ist im Quellcode implementiert, aber **noch nicht am Board validiert**;
+ist am Board gegen den Pi-Simulator geprüft (alle vier Fixtures,
+2026-10-11), aber **nicht an einem echten ELM327/Steuergerät**;
 siehe [ISO-TP-DTC-Labortest](docs/ISO-TP-DTC-LAB-TEST.md).
 Die vollstaendige CAN-/UDS-Mehrsteuergeraete-Dekodierung,
 alle M272-Erklärungstexte, persistente CSV-Speicherung, ein

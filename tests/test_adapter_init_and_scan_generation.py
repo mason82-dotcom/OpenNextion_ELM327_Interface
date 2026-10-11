@@ -71,6 +71,11 @@ class DtcScanSummaryTest(unittest.TestCase):
         self.assertLess(tail.index("dtcScanUndecodable"), tail.index('"Keine DTCs"'))
         self.assertLess(tail.index("dtcScanCodes>0"), tail.index('"Keine DTCs"'))
 
+    def test_raw_preview_is_single_line_and_short(self):
+        self.assertIn("preview.replace('\\n',' ');", self.body)
+        self.assertIn("preview.length()>18", self.body)
+        self.assertNotIn("answer.substring(0,30)", self.body)
+
     def test_new_scan_resets_summary(self):
         handler = section("static void onScanButton(", "static void renderTrimPage();")
         self.assertIn("dtcScanCodes = 0;", handler)

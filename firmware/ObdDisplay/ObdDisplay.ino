@@ -894,7 +894,8 @@ static void scanOneDtcMode() {
     dtcReport+="  RAW: "+answer.substring(0,100)+"\n\n";
   } else {
     dtcReport+=String(dtcs.count)+" verschiedene Codes";
-    dtcReport+=" / "+String(dtcs.ecuResponses)+" Antwortbloecke\n";
+    dtcReport+=" / "+String(dtcs.ecuResponses);
+    dtcReport+=dtcs.ecuResponses==1 ? " Antwortblock\n" : " Antwortbloecke\n";
     for(std::size_t k=0;k<dtcs.count;++k){
       const char *code=dtcs.entries[k].code;
       dtcReport+="  "+String(code);
@@ -908,7 +909,12 @@ static void scanOneDtcMode() {
   }
   if (dtcDetailText)lv_label_set_text(dtcDetailText,dtcReport.c_str());
   if (!dtcs.gotAnswer || dtcs.malformed) {
-    String preview=answer.substring(0,30);
+    // One line only: multi-line ELM replies would overflow into the next
+    // mode's row. The full reply stays in DETAILS.
+    String preview=answer;
+    preview.replace('\n',' ');
+    preview.trim();
+    if (preview.length()>18) preview=preview.substring(0,18)+"...";
     lv_label_set_text_fmt(dtcModeText[dtcIndex],"%s: RAW %s",
                           names[dtcIndex],preview.c_str());
     dtcScanUndecodable = true;

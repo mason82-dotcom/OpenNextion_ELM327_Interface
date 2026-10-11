@@ -1,7 +1,8 @@
 # DTC Multiframe (ELM327 ATH0) – Entwicklungs- und LAB-Test
 
-**Stand: nur Entwicklungsbranch, noch nicht am ESP32-S3 validiert.**
-Die bereits geprüfte Labor-Firmware bleibt vorerst auf dem Display.
+**Stand 2026-10-11: am ESP32-S3 gegen den Pi-Simulator geprüft
+(alle vier Fixtures, siehe Prüfstatus). Kein Test an einem echten
+ELM327 oder Steuergerät.**
 
 ## Neue Funktion
 
@@ -111,6 +112,20 @@ Weder Simulator noch Firmware senden `04`, Codierungs- oder
 Stellgliedkommandos.
 
 ## Prüfstatus
+
+**Boardtest 2026-10-11** (Lab-Image, ONX3248G035 am Pi-Simulator,
+Protokoll per `ATDPN` als CAN erkannt; Fotos der DTC-/DETAILS-Seite):
+
+| Fixture | Anzeige DTC-Seite | DETAILS | Ergebnis |
+|---|---|---|---|
+| `MULTI` | 03: `P0171 (+3)`, Status `4 Codes -> DETAILS` | P0171, P0301–P0303 mit Text und M272-Hinweis, 1 Antwortblock | bestanden |
+| `TWO` | 03: `P0174 (+4)`, Status `5 Codes -> DETAILS` | 5 Codes aus 2 Antwortblöcken | bestanden |
+| `TRUNCATED` | 03: `RAW …`, Status `RAW -> DETAILS` | `NICHT SICHER DEKODIERBAR` + Rohantwort | bestanden, keine Teilcodes |
+| `BAD_SEQUENCE` | 03: `RAW …`, Status `RAW -> DETAILS` | `NICHT SICHER DEKODIERBAR` + Rohantwort | bestanden, keine Teilcodes |
+
+Dabei gefunden und behoben: Die Statuszeile meldete `Keine DTCs`,
+obwohl 03 Codes enthielt (letzter Modus 0A leer), und die
+mehrzeilige RAW-Vorschau lief in die 07-Zeile.
 
 Native Tests der statischen Parserbibliothek,
 Python-Tests für die Auswahl der Laborantworten und Arduino-Builds
