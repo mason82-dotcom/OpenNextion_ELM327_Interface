@@ -862,16 +862,14 @@ static void scanOneDtcMode() {
     String preview=answer.substring(0,30);
     lv_label_set_text_fmt(dtcModeText[dtcIndex],"%s: RAW %s",
                           names[dtcIndex],preview.c_str());
-    lv_label_set_text(scanText,"DTC-Format nicht sicher dekodierbar");
+    lv_label_set_text(scanText,"RAW -> DETAILS");
   } else if (dtcs.count==0) {
     lv_label_set_text_fmt(dtcModeText[dtcIndex],"%s: keine",names[dtcIndex]);
-    lv_label_set_text(scanText,"Leseabfrage abgeschlossen");
+    lv_label_set_text(scanText,"Keine DTCs");
   } else {
     lv_label_set_text_fmt(dtcModeText[dtcIndex],"%s: %s (+%u)",
         names[dtcIndex],dtcs.entries[0].code,(unsigned)(dtcs.count-1));
-    const char *hint=obd_diag::m272Hint(dtcs.entries[0].code);
-    if (hint) lv_label_set_text_fmt(scanText,"M272-Hinweis: %s",hint);
-    else lv_label_set_text(scanText,"Codes siehe seriellem Rohprotokoll");
+    lv_label_set_text(scanText,"Codes -> DETAILS");
     for (std::size_t i=0;i<dtcs.count;++i)
       Serial.printf("DTC,%s,%s\n",names[dtcIndex],dtcs.entries[i].code);
   }
