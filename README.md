@@ -15,7 +15,7 @@ Eigenständiger OBD-II-Monitor auf dem **OpenNextion ONX3248G035** (ESP32-S3, 3,
 - **v0.2:** Getrennter Touch-Test und manuelle DTC-Schaltfläche: Seitenwechsel/Touch-Test lösen keine OBD-Abfragen aus. 
 - **v0.2:** WLAN-/ELM-Verbindungsanzeige und TX-/Timeout-/Antwortpuffer-Zähler (am Pi-Simulator bestätigt; echter Adapter nicht geprüft).
 - Gespeicherte (03), ausstehende (07) und permanente (0A) DTCs **zunächst als rohe Adapterantwort**, noch ohne vollständigen Multi-ECU-/ISO-TP-Dekoder.
-- Diagnose-Protokollzeilen über USB-Serial. **Noch keine persistente MicroSD-Aufzeichnung.**
+- Diagnose-Protokollzeilen über USB-Serial und (v0.3, im Verbindungsmodus) als CSV auf MicroSD: `/obd/S####_P##.csv`, eine Datei pro Sitzung, neue Teildatei ab 4 MB, Schreibpuffer jede Sekunde auf die Karte, Status auf der INFO-Seite. Noch keine Uhrzeit (keine RTC): Zeilen tragen Millisekunden seit Start.
 - Zentrale, geschlossene Allowlist; keine Mode 04/08, keine UDS-Schreibdienste, keine frei eingebbaren CAN-/ELM-Befehle, kein Terminal.
 
 ## Sicherheit
@@ -88,9 +88,46 @@ Ein Regressionstest verhindert eine Wiederholung dieser Layoutprobleme.
 **Vor jeder ELM327-Fahrzeugverbindung:** Den Pi-Labortest gemäß
 [ELM-SIMULATOR.md](docs/ELM-SIMULATOR.md) durchlaufen. Die Mode-01-Auswertung wurde auf einen strikt zeilenorientierten Parser umgestellt; dieser akzeptiert nur vollständige, headerlose 0x41-PID-Antworten und verwirft unsichere oder fehlerhafte Formate. DTCs bleiben unverändert Rohdaten ohne bestätigte ISO-TP-Dekodierung.
 
+## Android ELM327 v1.0.9 – Funktionsportierung (Feature-Branch)
+
+**Aktueller Entwicklungsbranch:** `feature/elm327-android-function-port-20261011`;
+eigener Draft-Pull-Request [#2](https://github.com/mason82-dotcom/OpenNextion_ELM327_Interface/pull/2).
+Diese Portierung ist noch **nicht** auf echter Hardware oder am Fahrzeug abgenommen.
+
+Die neue native Firmware integriert die **15 Android-Live-PIDs** inklusive
+STFT/LTFT beider Bänke, MAF, MAP, Lambda, ECU-Spannung und Luftdruck;
+zusätzlich `0100/0120/0140`-PID-Erkennung, mehrfach abgestuftes Polling,
+KOEO/KOER-Basisstatus und eine scrollbare **ALLE PIDS**-Seite.
+Manuelle Diagnoseansichten bieten Readiness/HU-AU-Vorcheck,
+Freeze-Frame-DTC, Mode-06-Aussetzerwerte sowie konservative DTC-Dekodierung
+und ausgewählte M272-Hinweise.
+`CSV,`-Messzeilen erscheinen über USB-Serial und zusätzlich als SD-Datei, wenn eine Karte steckt.
+
+**Phase 2 im Entwicklungsbranch:** Die passive Leerlauf-/2500-rpm-Fuel-Trim-
+Testführung ist mit frischen Messwerten, Stabilitätsprüfungen und
+Ergebnisbericht implementiert und am Display gegen den Pi-Simulator
+geprüft (2026-10-11). **Nicht an einem echten ELM327/Fahrzeug getestet.**
+Anleitung: [Fuel-Trim-Labortest](docs/FUEL-TRIM-LAB-TEST.md).
+
+**Nicht gleichzusetzen mit vollständiger Android-Funktionsgleichheit:**
+ISO-TP-Multiframe-Dekodierung fuer ELM-ATH0-Indexformat
+ist am Board gegen den Pi-Simulator geprüft (alle vier Fixtures,
+2026-10-11), aber **nicht an einem echten ELM327/Steuergerät**;
+siehe [ISO-TP-DTC-Labortest](docs/ISO-TP-DTC-LAB-TEST.md).
+Die vollstaendige CAN-/UDS-Mehrsteuergeraete-Dekodierung,
+alle M272-Erklärungstexte, Uhrzeit (RTC) im SD-Log, ein
+Read-only-Terminal und die gesamte Android-Timeout-/Resync-Logik
+sind noch nicht übernommen. Ein Fahrzeugtest ist nicht freigegeben.
+
+Siehe [Feature-Matrix und sicherer Pi-Build](docs/ANDROID-ELM327-FEATURE-PORT.md).
+Wegen der erweiterten Antworten muss der laufende Pi-Simulator
+**nach `git switch` neu gestartet** werden, bevor das LAB-Image
+auf dem Display getestet werden kann.
+
 ## Geplante Ausbaustufen
 
-1. **v0.1**: Display-/Touch-Bring-up, geschlossene Read-only-Allowlist, Basis-PIDs, Roh-DTCs und RPM-Chart (Offline-Display und Touch real geprüft).\n2. **v0.2 UI**: vier Touchseiten, dunkles Diagramm und Verbindungsdiagnose (Offline- und Pi-Simulator-LAB-Boardtest bestätigt).
+1. **v0.1**: Display-/Touch-Bring-up, geschlossene Read-only-Allowlist, Basis-PIDs, Roh-DTCs und RPM-Chart (Offline-Display und Touch real geprüft).
+2. **v0.2 UI**: vier Touchseiten, dunkles Diagramm und Verbindungsdiagnose (Offline- und Pi-Simulator-LAB-Boardtest bestätigt).
 3. **Weiterer v0.2 Diagnosestack**: ISO-TP-/Multi-ECU-Parser, vollständige DTC-Dekodierung, Freeze-Frames, Mode-01-PID-Erkennung, Timeout-/Reconnect-Härtung und Parser-Fuzzing.
 4. **v0.3**: MicroSD-CSV mit RTC-Zeit, Rotationsprinzip, Stromausfall-Schutz, Messintervalle und Export; Diagnoseprofile.
 5. **v0.4**: Zusätzliche Lesedaten (Fuel Trims, MAF, MAP, Readiness, Mode 06) und M272-spezifische Auswertung, sofern ECU unterstützt.

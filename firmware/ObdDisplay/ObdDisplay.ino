@@ -13,6 +13,12 @@
 #include "BoardConfig.h"
 #include "ReadOnlyPolicy.h"
 #include "ObdResponseParser.h"
+#include "ObdPidCatalog.h"
+#include "ObdDiagnostics.h"
+#include "ObdIsoTp.h"
+#include "ObdDtcNames.h"
+#include "FuelTrimTest.h"
+#include "SdLogFormat.h"
 
 #if defined(OBD_LAB_BUILD)
 #if __has_include("Config.h")
@@ -33,12 +39,24 @@
 #endif
 #endif
 
+#if OBD_CONNECTED_BUILD
+#include <SD_MMC.h>
+#endif
+
 using obd_policy::Command;
 static constexpr uint32_t LCD_SPI_HZ = 80000000;
 static constexpr uint32_t WIFI_RETRY_MS = 12000;
-static constexpr uint32_t POLL_INTERVAL_MS = 500;
+// Pause after the ELM '>' prompt before the next request. The request rate
+// itself is capped by the per-PID intervals in ObdPidCatalog.h.
+static constexpr uint32_t COMMAND_GAP_MS = 25;
 static constexpr uint16_t BUF_LINES = 40;
-static constexpr uint32_t CMD_TIMEOUT_MS = 1700;
+// Measured on the bench: WLAN round trips spike to 0.5-1.6 s while either
+// side is in power save, so 1.7 s dropped the whole session (and any running
+// Fuel-Trim test) on a single late reply.
+static constexpr uint32_t CMD_TIMEOUT_MS = 2500;
+static constexpr uint32_t PROTOCOL_SEARCH_TIMEOUT_MS = 12000;
+// WiFiClient::connect blocks the UI; a LAN TCP handshake needs far less.
+static constexpr int32_t ADAPTER_CONNECT_TIMEOUT_MS = 1000;
 
 Arduino_DataBus *bus = new Arduino_HWSPI(
     LCD_DC_PIN, LCD_CS_PIN, LCD_SCLK_PIN, LCD_MOSI_PIN, LCD_MISO_PIN, &SPI, true);
@@ -52,18 +70,140 @@ static lv_disp_drv_t dispDriver;
 static lv_obj_t *statusText, *rpmText, *coolantText, *speedText, *scanText, *touchText;
 static lv_obj_t *rpmChart;
 static lv_chart_series_t *rpmSeries;
-static lv_obj_t *pages[4], *navButtons[4], *linkText, *statsText;
-static lv_obj_t *dtcModeText[3];
+static lv_obj_t *pages[9], *navButtons[4], *linkText, *statsText;
+static lv_obj_t *extraDataText, *engineStateText, *inspectionText, *misfireText;
+static lv_obj_t *trimStageText, *trimReportText;
+static lv_obj_t *dtcModeText[3], *dtcDetailText;
+static lv_obj_t *sdText;
 static uint32_t tapCount = 0;
 
 #if OBD_CONNECTED_BUILD
 static WiFiClient adapter;
-static uint32_t lastAttempt = 0, lastPoll = 0;
+static uint32_t lastAttempt = 0, lastCommandDone = 0;
 static bool adapterReady = false, dtcScanRequested = false;
 static int rpm = -1, coolantC = -1000, speedKph = -1;
-static uint32_t pidMask = 0;
-static uint8_t pollIndex = 0, dtcIndex = 0;
+static uint32_t pidMasks[3] = {0, 0, 0};
+static obd_pids::Scheduler pollScheduler;
+static double pidValues[obd_pids::count] = {};
+static bool pidValid[obd_pids::count] = {};
+static uint32_t lastExtraRefresh = 0;
+static obd_diag::DtcEncoding dtcEncoding = obd_diag::DtcEncoding::Unknown;
+static bool inspectionRequested = false, misfireRequested = false;
+static uint8_t inspectionStep = 0, misfireStep = 0;
+static String inspectionReport, misfireReport;
+static uint8_t dtcIndex = 0;
+// transact() keeps LVGL alive, so touch callbacks can start, replace or
+// cancel a diagnostic while a reply is still pending. Each such action bumps
+// the generation; a reply sent under an older generation is discarded.
+static uint32_t diagGeneration = 0;
+// Summary over all three DTC modes of one scan; the status line must not
+// report "keine" just because the last mode (0A) happened to be empty.
+static uint16_t dtcScanCodes = 0;
+static bool dtcScanUndecodable = false;
+static String dtcReport;
 static uint32_t txCount = 0, timeoutCount = 0, inputErrorCount = 0;
+static uint32_t lastLatencyMs = 0, lastStatsUi = 0, statsTxCount = 0;
+static obd_trim::Test trimTest;
+static uint32_t lastTrimUi=0;
+static obd_trim::Stage lastTrimRenderedStage=obd_trim::Stage::Idle;
+static uint8_t trimPollIndex=0;
+static void cancelTrimForOtherDiagnostic();
+
+// MicroSD CSV log (v0.3). Optional: without a card nothing changes; the
+// first failed write stops logging instead of retrying on a bad card.
+#if defined(OBD_LAB_BUILD)
+static constexpr const char *LOG_SOURCE = "LAB_SIMULATED";
+#else
+static constexpr const char *LOG_SOURCE = "ECU_ADAPTER_UNVALIDATED";
+#endif
+static File sdFile;
+static bool sdReady = false;
+static uint16_t sdSession = 0;
+static uint8_t sdPart = 1;
+static uint32_t sdBytes = 0, sdTotalBytes = 0, sdLastFlush = 0;
+static const char *sdProblem = "keine Karte";
+
+static void sdStop(const char *problem) {
+  if (sdFile) sdFile.close();
+  sdReady = false;
+  sdProblem = problem;
+  Serial.printf("SD: %s\n", problem);
+}
+
+static bool sdOpenPart() {
+  char name[32], head[160];
+  if (!obd_log::fileName(name, sizeof name, sdSession, sdPart)) {
+    sdStop("Dateinummern erschoepft");
+    return false;
+  }
+  sdFile = SD_MMC.open(name, FILE_WRITE);
+  const size_t n = obd_log::header(head, sizeof head, LOG_SOURCE, sdSession, sdPart);
+  if (!sdFile || n == 0 || sdFile.write((const uint8_t *)head, n) != n) {
+    sdStop("Datei nicht anlegbar");
+    return false;
+  }
+  sdBytes = n;
+  sdTotalBytes += n;
+  sdLastFlush = millis();
+  Serial.printf("SD: logging to %s\n", name);
+  return true;
+}
+
+static void sdWrite(const char *row, size_t len) {
+  if (!sdReady || len == 0) return;
+  if (obd_log::shouldRotate(sdBytes, len)) {
+    sdFile.close();
+    ++sdPart;
+    if (!sdOpenPart()) return;
+  }
+  if (sdFile.write((const uint8_t *)row, len) != len) {
+    sdStop("Schreibfehler, Logging gestoppt");
+    return;
+  }
+  sdBytes += len;
+  sdTotalBytes += len;
+}
+
+static void sdEvent(const char *text) {
+  char row[112];
+  sdWrite(row, obd_log::eventRow(row, sizeof row, millis(), text));
+}
+
+static void sdFlushIfDue(uint32_t now) {
+  if (!sdReady || now - sdLastFlush < obd_log::FLUSH_INTERVAL_MS) return;
+  sdFile.flush();
+  sdLastFlush = now;
+}
+
+static void sdBegin() {
+  // CS#/DATA3 sits on the expander and is already high after resetPanel().
+  // Never format: an unreadable card may still hold data the user wants.
+  if (!SD_MMC.setPins(SD_CLK_PIN, SD_CMD_PIN, SD_D0_PIN) ||
+      !SD_MMC.begin("/sdcard", true, false, SDMMC_FREQ_DEFAULT)) {
+    sdProblem = "keine Karte";
+    Serial.println("SD: no card mounted, logging off");
+    return;
+  }
+  if (!SD_MMC.exists(obd_log::DIRECTORY) && !SD_MMC.mkdir(obd_log::DIRECTORY)) {
+    sdStop("Ordner /obd nicht anlegbar");
+    return;
+  }
+  uint16_t highest = 0;
+  File dir = SD_MMC.open(obd_log::DIRECTORY);
+  for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+    const uint16_t session = obd_log::sessionOf(f.name());
+    if (session > highest) highest = session;
+    f.close();
+  }
+  dir.close();
+  sdSession = obd_log::nextSession(highest);
+  if (sdSession == 0) {
+    sdStop("Sitzungsnummern erschoepft");
+    return;
+  }
+  sdPart = 1;
+  sdReady = sdOpenPart();
+}
 #endif
 
 static void resetPanel() {
@@ -149,10 +289,11 @@ static lv_obj_t* makeButton(lv_obj_t *parent, const char *title, int x, int y,
 }
 
 static void showPage(uint8_t page) {
-  if (page >= 4) return;
-  for (uint8_t i = 0; i < 4; ++i) {
+  if (page >= 9) return;
+  for (uint8_t i = 0; i < 9; ++i) {
     if (i == page) lv_obj_clear_flag(pages[i], LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(pages[i], LV_OBJ_FLAG_HIDDEN);
+    if (i >= 4) continue;
     lv_obj_set_style_bg_color(navButtons[i],
       lv_color_hex(i == page ? 0x225889 : 0x17283D), LV_PART_MAIN);
     lv_obj_set_style_border_width(navButtons[i], i == page ? 1 : 0, LV_PART_MAIN);
@@ -171,6 +312,10 @@ static void onTouchButton(lv_event_t *event) {
   lv_label_set_text_fmt(touchText, "Touch: %lu", (unsigned long)tapCount);
 }
 
+static void onDtcDetails(lv_event_t *event) {
+  if(lv_event_get_code(event)==LV_EVENT_CLICKED) showPage(8);
+}
+
 static void onScanButton(lv_event_t *event) {
   if (lv_event_get_code(event) != LV_EVENT_CLICKED) return;
 #if OBD_CONNECTED_BUILD
@@ -178,10 +323,116 @@ static void onScanButton(lv_event_t *event) {
     lv_label_set_text(scanText, "ELM327 nicht verbunden");
     return;
   }
+  inspectionRequested = false; misfireRequested = false;
+  cancelTrimForOtherDiagnostic();
+  ++diagGeneration;
+  dtcScanCodes = 0;
+  dtcScanUndecodable = false;
   dtcScanRequested = true;
   dtcIndex = 0;
+#if defined(OBD_LAB_BUILD)
+  dtcReport="LAB-SIMULATION: keine echten Fahrzeugcodes\n";
+#else
+  dtcReport="ECU-Lesedaten (noch nicht fahrzeugvalidiert)\n";
+#endif
+  dtcReport+="ATH0: Antwortbloecke ohne ECU-Adressen\n\n";
+  if(dtcDetailText)lv_label_set_text(dtcDetailText,dtcReport.c_str());
   lv_label_set_text(scanText, "DTC-Leseabfrage angefordert");
   for (int i = 0; i < 3; ++i) lv_label_set_text(dtcModeText[i], "Wartet auf Antwort...");
+#endif
+}
+
+
+#if OBD_CONNECTED_BUILD
+static void renderTrimPage();
+static void cancelTrimForOtherDiagnostic() {
+  if(!trimTest.running()) return;
+  trimTest.cancel();
+  if(trimStageText) lv_label_set_text(trimStageText,"Trim-Test abgebrochen");
+  if(trimReportText) lv_label_set_text(trimReportText,
+      "Test abgebrochen, weil eine andere Diagnose gestartet wurde.");
+}
+#endif
+static void onTrimStart(lv_event_t *event) {
+  if (lv_event_get_code(event)!=LV_EVENT_CLICKED) return;
+  showPage(7);
+#if OBD_CONNECTED_BUILD
+  if(!adapterReady) {
+    lv_label_set_text(trimStageText,"Keine Verbindung zum Adapter");
+    return;
+  }
+  const uint8_t required[]={0x06,0x07,0x08,0x09,0x0C,0x0D};
+  for(const uint8_t pid:required) {
+    if(!obd_pids::supported(pid,pidMasks)){
+      lv_label_set_text(trimStageText,"ECU: erforderlicher PID fehlt");
+      lv_label_set_text(trimReportText,
+          "RPM, Tempo und alle vier Fuel Trims muessen unterstuetzt sein. "
+          "Kein Test gestartet.");
+      return;
+    }
+  }
+  // This is purely a UI/readout action. It NEVER sends a vehicle command.
+  // No other on-demand scan may monopolize the PID poller while sampling.
+  inspectionRequested=false;
+  misfireRequested=false;
+  dtcScanRequested=false;
+  ++diagGeneration;
+  trimPollIndex=0;
+  trimTest.start();
+  renderTrimPage();
+#else
+  lv_label_set_text(trimStageText,"OFFLINE: keine Messung moeglich");
+#endif
+}
+static void onTrimCancel(lv_event_t *event) {
+  if(lv_event_get_code(event)!=LV_EVENT_CLICKED)return;
+#if OBD_CONNECTED_BUILD
+  trimTest.cancel();
+  lv_label_set_text(trimStageText,"Fuel-Trim-Test gestoppt");
+  lv_label_set_text(trimReportText,"Test abgebrochen. Erneut START druecken.");
+#else
+  lv_label_set_text(trimStageText,"OFFLINE: keine Messung aktiv");
+#endif
+}
+static void onMorePidButton(lv_event_t *event) {
+  if (lv_event_get_code(event)==LV_EVENT_CLICKED) showPage(4);
+}
+static void onInspectionButton(lv_event_t *event) {
+  if (lv_event_get_code(event)!=LV_EVENT_CLICKED) return;
+  showPage(5);
+#if OBD_CONNECTED_BUILD
+  if (!adapterReady) {lv_label_set_text(inspectionText,"Keine Verbindung");return;}
+  cancelTrimForOtherDiagnostic();
+#if defined(OBD_LAB_BUILD)
+  inspectionReport="HU/AU-Vorabcheck: SIMULIERTE OBD-Daten\n";
+#else
+  inspectionReport="HU/AU-Vorabcheck: OBD-Lesedaten\n";
+#endif
+  lv_label_set_text(inspectionText,inspectionReport.c_str());
+  inspectionRequested=true; misfireRequested=false; dtcScanRequested=false;
+  ++diagGeneration;
+  inspectionStep=0;
+#else
+  lv_label_set_text(inspectionText,"Offline: keine ECU-Daten");
+#endif
+}
+static void onMode06Button(lv_event_t *event) {
+  if (lv_event_get_code(event)!=LV_EVENT_CLICKED) return;
+  showPage(6);
+#if OBD_CONNECTED_BUILD
+  if (!adapterReady) {lv_label_set_text(misfireText,"Keine Verbindung");return;}
+  cancelTrimForOtherDiagnostic();
+#if defined(OBD_LAB_BUILD)
+  misfireReport="M272 Aussetzer / Mode 06 (LAB-SIMULATION)\n";
+#else
+  misfireReport="M272 Aussetzer / Mode 06 (ECU-Lesedaten)\n";
+#endif
+  lv_label_set_text(misfireText,misfireReport.c_str());
+  misfireRequested=true; inspectionRequested=false; dtcScanRequested=false;
+  ++diagGeneration;
+  misfireStep=0;
+#else
+  lv_label_set_text(misfireText,"Offline: keine ECU-Daten");
 #endif
 }
 
@@ -194,7 +445,7 @@ static void buildUi() {
 
   label(screen, "OBD DIAG  /  READ-ONLY", 11, 11, 295, CYAN);
   statusText = label(screen, "Initialisierung...", 11, 38, 296, MUTED);
-  for (uint8_t i = 0; i < 4; ++i) {
+  for (uint8_t i = 0; i < 9; ++i) {
     pages[i] = lv_obj_create(screen);
     lv_obj_set_pos(pages[i], 0, 74);
     lv_obj_set_size(pages[i], 320, 349);
@@ -218,13 +469,15 @@ static void buildUi() {
   speedText = label(speedCard, "-- km/h", 10, 48, 124, LIGHT);
   lv_obj_set_style_text_font(speedText, &lv_font_montserrat_20, LV_PART_MAIN);
 #if defined(OBD_LAB_BUILD)
-  label(pages[0], "LABOR: simulierte Werte, kein Fahrzeug", 12, 254, 290, MUTED);
+  label(pages[0], "LAB: Testdaten", 12, 260, 148, MUTED);
 #elif OBD_CONNECTED_BUILD
-  label(pages[0], "Livewerte bei ECU-Unterstuetzung", 12, 254, 290, MUTED);
+  label(pages[0], "OBD-Livewerte", 12, 260, 148, MUTED);
 #else
-  label(pages[0], "Offline: keine ECU-Messwerte", 12, 254, 290, MUTED);
+  label(pages[0], "Offline-Modus", 12, 260, 148, MUTED);
 #endif
-  label(pages[0], "Keine Codierung / keine DTC-Loeschung", 12, 285, 291, 0x53D7CF);
+  lv_obj_t *morePids=makeButton(pages[0],"ALLE PIDS",166,249,142,43);
+  lv_obj_add_event_cb(morePids,onMorePidButton,LV_EVENT_CLICKED,nullptr);
+  label(pages[0], "Keine Codierung / keine DTC-Loeschung", 12, 295, 291, 0x53D7CF);
 
   // GRAPH: explicit dark LVGL chart styling (no white plot rectangle).
   label(pages[1], "DREHZAHLVERLAUF", 12, 3, 292, CYAN);
@@ -271,11 +524,15 @@ static void buildUi() {
 #endif
       12, 238, 146, 42);
   lv_obj_add_event_cb(dtcButton, onScanButton, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *checkButton=makeButton(pages[2],"HU/AU",169,238,139,42);
+  lv_obj_add_event_cb(checkButton,onInspectionButton,LV_EVENT_CLICKED,nullptr);
 #if !OBD_CONNECTED_BUILD
   lv_obj_add_state(dtcButton, LV_STATE_DISABLED);
 #endif
-  scanText = label(pages[2], "Noch kein DTC-Scan", 12, 290, 292, MUTED);
-  label(pages[2], "Rohdaten: keine Dekodierung", 12, 322, 289, 0xFFCC76);
+  scanText = label(pages[2], "Noch kein DTC-Scan", 12, 290, 145, MUTED);
+  lv_obj_t *detailsButton=makeButton(pages[2],"DETAILS",166,284,142,39);
+  lv_obj_add_event_cb(detailsButton,onDtcDetails,LV_EVENT_CLICKED,nullptr);
+  label(pages[2], "ISO-TP: strikte, begrenzte Dekodierung", 12, 329, 290, 0xFFCC76);
 
   // INFO: link diagnostics and local touch counter.
   label(pages[3], "SYSTEM / VERBINDUNG", 12, 3, 290, CYAN);
@@ -283,10 +540,67 @@ static void buildUi() {
   linkText = label(sysCard, "WLAN / OBD: --", 10, 12, 274, LIGHT);
   statsText = label(sysCard, "Keine Diagnosedaten", 10, 62, 274, MUTED);
   label(sysCard, "Feste Read-only-Befehlsfreigabe", 10, 126, 274, 0x53D7CF);
+  sdText = label(sysCard, "SD: --", 10, 147, 274, MUTED);
   lv_obj_t *touchBtn = makeButton(pages[3], "Touch testen", 12, 230, 146, 43);
   lv_obj_add_event_cb(touchBtn, onTouchButton, LV_EVENT_CLICKED, nullptr);
   touchText = label(pages[3], "Touch: 0", 175, 243, 132, LIGHT);
   label(pages[3], "Keine Schreib-, Stellglied- oder Loeschfunktion", 12, 307, 290, MUTED);
+
+  // Additional pages reached via large buttons, keeping existing four tabs.
+  label(pages[4],"SENSOREN / FUEL TRIMS",12,3,165,CYAN);
+  lv_obj_t *mode06Btn=makeButton(pages[4],"MODE 06",180,0,128,35);
+  lv_obj_add_event_cb(mode06Btn,onMode06Button,LV_EVENT_CLICKED,nullptr);
+  lv_obj_t *pidPanel=makeCard(pages[4],12,44,296,229);
+  lv_obj_add_flag(pidPanel,LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scroll_dir(pidPanel,LV_DIR_VER);
+  extraDataText=label(pidPanel,"PIDs werden erkannt...",10,7,272,LIGHT);
+  engineStateText=label(pages[4],"Betriebszustand: noch unbekannt",12,280,295,MUTED);
+  lv_obj_t *trimOpen=makeButton(pages[4],"TRIM-TEST",178,313,130,32);
+  lv_obj_add_event_cb(trimOpen,onTrimStart,LV_EVENT_CLICKED,nullptr);
+  label(pages[5],"HU/AU-VORCHECK / OBD",12,3,296,CYAN);
+  label(pages[5],"Nur Indikation, keine amtliche Pruefung",12,28,296,MUTED);
+  lv_obj_t *insPanel=makeCard(pages[5],12,63,296,276);
+  lv_obj_add_flag(insPanel,LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scroll_dir(insPanel,LV_DIR_VER);
+  inspectionText=label(insPanel,"HU/AU auf DTC-Seite starten",9,10,273,LIGHT);
+  label(pages[6],"MODE 06 / AUSSETZER",12,3,296,CYAN);
+  label(pages[6],"M272: Bank 1 Zyl.1-3 | Bank 2 Zyl.4-6",12,27,295,MUTED);
+  lv_obj_t *misPanel=makeCard(pages[6],12,62,296,274);
+  lv_obj_add_flag(misPanel,LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scroll_dir(misPanel,LV_DIR_VER);
+  misfireText=label(misPanel,"Mode 06 ueber ALLE PIDS starten",9,10,274,LIGHT);
+
+
+  // Phase-controlled passive Fuel-Trim check, no motor/throttle commands.
+  label(pages[7],"FUEL-TRIM-TEST",12,3,295,CYAN);
+#if defined(OBD_LAB_BUILD)
+  label(pages[7],"LAB-SIMULATION / keine ECU-Messwerte",12,27,295,MUTED);
+#else
+  label(pages[7],"Passiv: nur lesen, Drehzahl manuell",12,27,295,MUTED);
+#endif
+  trimStageText=label(pages[7],"Bereit: START antippen",12,56,293,LIGHT);
+  lv_obj_t *trimPanel=makeCard(pages[7],12,108,296,176);
+  lv_obj_add_flag(trimPanel,LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scroll_dir(trimPanel,LV_DIR_VER);
+  trimReportText=label(trimPanel,
+      "Nur bei stehendem Fahrzeug; Motorzustand und "
+      "Drehzahl werden automatisch aus PIDs ermittelt. "
+      "Keine Stellgliedansteuerung.",9,9,270,LIGHT);
+  lv_obj_t *trimStart=makeButton(pages[7],"START",12,296,142,39);
+  lv_obj_add_event_cb(trimStart,onTrimStart,LV_EVENT_CLICKED,nullptr);
+  lv_obj_t *trimCancel=makeButton(pages[7],"ABBRUCH",166,296,142,39);
+  lv_obj_add_event_cb(trimCancel,onTrimCancel,LV_EVENT_CLICKED,nullptr);
+
+  // DTC detail list is scrollable; no scan begins merely by opening it.
+  label(pages[8],"DTC-DETAILS / NUR LESEN",12,3,296,CYAN);
+  label(pages[8],"03 / 07 / 0A: getrennte Antworten",12,30,296,MUTED);
+  lv_obj_t *detailCard=makeCard(pages[8],12,63,296,275);
+  lv_obj_add_flag(detailCard,LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scroll_dir(detailCard,LV_DIR_VER);
+  dtcDetailText=label(detailCard,
+      "DTC auf der DTC-Seite manuell einlesen.\n"
+      "ISO-TP-Codes nur aus vollstaendigen Antworten.\n"
+      "Keine Loeschfunktion.",9,9,274,LIGHT);
 
   const char *tabs[4] = {"LIVE", "GRAPH", "DTC", "INFO"};
   for (uint8_t i = 0; i < 4; ++i) {
@@ -313,16 +627,16 @@ static bool transact(Command command, String &answer, uint32_t timeoutMs = CMD_T
   adapter.print(wire);
   adapter.write('\r');
   ++txCount;
-  lv_label_set_text_fmt(statsText, "Gesendete Befehle: %lu\nTimeouts: %lu  Pufferfehler: %lu",
-      (unsigned long)txCount, (unsigned long)timeoutCount,
-      (unsigned long)inputErrorCount);
   answer = "";
   uint32_t start = millis();
   while (millis() - start < timeoutMs) {
     uiTick();
     while (adapter.available()) {
       char c = (char)adapter.read();
-      if (c == '>') return true;
+      if (c == '>') {
+        lastLatencyMs = millis() - start;
+        return true;
+      }
       if (answer.length() >= 1024) {
         ++inputErrorCount;
         adapter.stop();
@@ -340,32 +654,109 @@ static bool transact(Command command, String &answer, uint32_t timeoutMs = CMD_T
   return false;
 }
 
+// Once per second; avoids an LVGL label redraw for every single command.
+static void updateLinkStats(uint32_t now) {
+  const uint32_t elapsed = now - lastStatsUi;
+  if (elapsed < 1000) return;
+  const uint32_t sent = txCount - statsTxCount;
+  lv_label_set_text_fmt(statsText,
+      "Befehle: %lu  (%lu/s)\nTimeouts: %lu  Antwortfehler: %lu\n"
+      "Letzte Antwortzeit: %lu ms",
+      (unsigned long)txCount, (unsigned long)(sent * 1000UL / elapsed),
+      (unsigned long)timeoutCount, (unsigned long)inputErrorCount,
+      (unsigned long)lastLatencyMs);
+  statsTxCount = txCount;
+  if (sdText) {
+    if (sdReady)
+      lv_label_set_text_fmt(sdText, "SD: S%04u_P%02u  %lu KB",
+          (unsigned)sdSession, (unsigned)sdPart,
+          (unsigned long)(sdTotalBytes / 1024));
+    else
+      lv_label_set_text_fmt(sdText, "SD: %s", sdProblem);
+  }
+  lastStatsUi = now;
+}
+
 static void markDisconnected(const char *reason) {
+  if (adapterReady) {
+    char event[96];
+    snprintf(event, sizeof event, "adapter disconnected: %s", reason);
+    sdEvent(event);
+  }
   adapterReady = false;
-  pidMask = 0;
+  pidMasks[0] = pidMasks[1] = pidMasks[2] = 0;
+  pollScheduler.reset();
+  for (std::size_t i=0;i<obd_pids::count;++i) pidValid[i]=false;
   rpm = -1; coolantC = -1000; speedKph = -1;
+  dtcEncoding = obd_diag::DtcEncoding::Unknown;
+  // A diagnostic scan belongs to one adapter session: never resume it
+  // automatically on a fresh TCP connection.
+  dtcScanRequested = false;
+  inspectionRequested = false;
+  misfireRequested = false;
+  trimTest.cancel();
+  if(trimStageText)lv_label_set_text(trimStageText,"Fuel-Trim-Test: Verbindung verloren");
+  if(trimReportText)lv_label_set_text(trimReportText,
+      "Vorherige Messung ungueltig. Vollstaendig neu starten.");
+  dtcIndex = inspectionStep = misfireStep = 0;
+  ++diagGeneration;
+  inspectionReport = "";
+  misfireReport = "";
+  if (extraDataText) lv_label_set_text(extraDataText, "Keine Verbindung");
+  if (engineStateText) lv_label_set_text(engineStateText, "Betriebszustand: unbekannt");
+  if (inspectionText) {
+    lv_label_set_text(inspectionText,
+        "Verbindung verloren: vorherige HU/AU-Daten ungueltig. Neu lesen.");
+    // The HU/AU list can have been scrolled to the bottom.
+    // Ensure the safety notice is visible immediately on link loss.
+    lv_obj_scroll_to_y(lv_obj_get_parent(inspectionText), 0, LV_ANIM_OFF);
+  }
+  if (misfireText) {
+    lv_label_set_text(misfireText,
+        "Verbindung verloren: vorherige Mode06-Daten ungueltig. Neu lesen.");
+    lv_obj_scroll_to_y(lv_obj_get_parent(misfireText), 0, LV_ANIM_OFF);
+  }
+  if (scanText) lv_label_set_text(scanText, "Verbindung verloren: DTC neu lesen");
+  dtcReport="Verbindung verloren: vorherige DTC-Daten ungueltig. Neu lesen.";
+  if(dtcDetailText) {
+    lv_label_set_text(dtcDetailText,dtcReport.c_str());
+    lv_obj_scroll_to_y(lv_obj_get_parent(dtcDetailText),0,LV_ANIM_OFF);
+  }
+  for (int i=0;i<3;++i)
+    if (dtcModeText[i]) lv_label_set_text(dtcModeText[i], "DTC: -- (getrennt)");
+#if defined(OBD_LAB_BUILD)
+  // A Pi TCP simulator is not a vehicle ECU; make LAB failures explicit.
+  lv_label_set_text(statusText, "LAB: Pi-Simulator nicht erreichbar");
+  lv_label_set_text(linkText, "LAB-Simulator: getrennt");
+  (void)reason;
+#else
   lv_label_set_text(statusText, reason);
   lv_label_set_text(linkText, "ELM327: getrennt");
+#endif
   lv_label_set_text(rpmText, "-- rpm");
   lv_label_set_text(coolantText, "-- C");
   lv_label_set_text(speedText, "-- km/h");
 }
 
-// Read-only PID parser uses bounded, line-aware frames from ObdResponseParser.h.
 static bool pidSupported(uint8_t pid) {
-  if (pid < 1 || pid > 0x20) return false;
-  return (pidMask & (1UL << (0x20 - pid))) != 0;
+  return obd_pids::supported(pid, pidMasks);
 }
 
 static bool initAdapter() {
   if (WiFi.status() != WL_CONNECTED) return false;
-  if (!adapter.connect(ELM_HOST, ELM_PORT, 1800)) return false;
+#if defined(OBD_LAB_BUILD)
+  lv_label_set_text(linkText, "LAB-Simulator: verbinde...");
+#else
+  lv_label_set_text(linkText, "ELM327: verbinde...");
+#endif
+  uiTick(); // render the hint before the blocking TCP connect
+  if (!adapter.connect(ELM_HOST, ELM_PORT, ADAPTER_CONNECT_TIMEOUT_MS)) return false;
   const Command setup[] = {
       Command::AdapterReset, Command::AdapterEchoOff, Command::AdapterLinesOff,
       Command::AdapterSpacesOff, Command::AdapterHeadersOff, Command::AdapterAutoProtocol};
   String response;
   for (Command c : setup) {
-    if (!transact(c, response, c == Command::AdapterReset ? 3500 : 1700)) return false;
+    if (!transact(c, response, c == Command::AdapterReset ? 3500 : CMD_TIMEOUT_MS)) return false;
     if (response.indexOf('?') >= 0 || response.indexOf("ERROR") >= 0) return false;
 #if defined(OBD_LAB_BUILD)
     // Fail closed: no PID/DTC request unless the dedicated Pi simulator
@@ -378,8 +769,34 @@ static bool initAdapter() {
     }
 #endif
   }
-  if (!transact(Command::SupportedPids00, response, 3000)) return false;
-  if (!obd_response::supportedPids00(response.c_str(), pidMask)) return false;
+  // With ATSP0 the ELM327 only searches the vehicle protocol on the first
+  // OBD request; "SEARCHING..." can take several seconds on ISO/KWP buses.
+  if (!transact(Command::SupportedPids00, response, PROTOCOL_SEARCH_TIMEOUT_MS)) return false;
+  if (!obd_response::supportedBitmap(response.c_str(), 0x00, pidMasks[0])) return false;
+  pidMasks[1] = pidMasks[2] = 0;
+  if (pidMasks[0] & 1) {
+    if (transact(Command::SupportedPids20, response, 3000)) {
+      (void)obd_response::supportedBitmap(response.c_str(), 0x20, pidMasks[1]);
+    } else return false;
+    if (pidMasks[1] & 1) {
+      if (transact(Command::SupportedPids40, response, 3000)) {
+        (void)obd_response::supportedBitmap(response.c_str(), 0x40, pidMasks[2]);
+      } else return false;
+    }
+  }
+  // ATDPN is only meaningful after the protocol search above; before it
+  // a real ELM327 reports "A0" and every DTC list would stay undecodable.
+  if (!transact(Command::AdapterProtocolId, response, CMD_TIMEOUT_MS)) return false;
+  String proto = response;
+  proto.trim();
+  if (proto.startsWith("A") && proto.length() == 2) proto.remove(0,1);
+  if (proto.length() == 1 && proto[0]>='6' && proto[0]<='9')
+    dtcEncoding = obd_diag::DtcEncoding::Can;
+  else if (proto.length() == 1 && proto[0]>='1' && proto[0]<='5')
+    dtcEncoding = obd_diag::DtcEncoding::Legacy;
+  else dtcEncoding = obd_diag::DtcEncoding::Unknown;
+  pollScheduler.reset();
+  for (std::size_t i=0;i<obd_pids::count;++i) pidValid[i]=false;
   adapterReady = true;
 #if defined(OBD_LAB_BUILD)
   lv_label_set_text(statusText, "LAB: Pi-Simulator verbunden");
@@ -388,34 +805,202 @@ static bool initAdapter() {
   lv_label_set_text(statusText, "ELM327 verbunden | Mode 01 aktiv");
   lv_label_set_text(linkText, "WLAN / ELM327: verbunden");
 #endif
-  Serial.printf("OBD: Supported PIDs bitmap=0x%08lX\n", (unsigned long)pidMask);
+  Serial.printf("OBD: PIDs 00=%08lX 20=%08lX 40=%08lX CAN=%d\n",
+       (unsigned long)pidMasks[0],(unsigned long)pidMasks[1],
+       (unsigned long)pidMasks[2],dtcEncoding==obd_diag::DtcEncoding::Can);
+#if defined(OBD_LAB_BUILD)
+  Serial.println("CSV_SOURCE,LAB_SIMULATED");
+#else
+  Serial.println("CSV_SOURCE,ECU_ADAPTER_UNVALIDATED");
+#endif
+  Serial.println("CSV,millis,pid,label,value,unit,latency_ms");
+  char event[96];
+  snprintf(event, sizeof event, "adapter connected CAN=%d PIDs=%08lX/%08lX/%08lX",
+      dtcEncoding==obd_diag::DtcEncoding::Can, (unsigned long)pidMasks[0],
+      (unsigned long)pidMasks[1], (unsigned long)pidMasks[2]);
+  sdEvent(event);
   return true;
 }
 
+// This view is presentation-only; it never communicates with the ELM adapter.
+static String trimNumber(double value,uint8_t decimals=1) {
+  return std::isfinite(value)
+      ? String(value, static_cast<unsigned int>(decimals)) : String("--");
+}
+static void renderTrimPage() {
+  if(!trimStageText || !trimReportText)return;
+  const auto stage=trimTest.stage();
+  const uint32_t left=(trimTest.remainingMs(millis())+999)/1000;
+  String status;
+  switch(stage){
+    case obd_trim::Stage::Idle: status="Bereit / manuell START";break;
+    case obd_trim::Stage::WaitIdle:
+      status="Leerlauf 550-1000 rpm / Stillstand, stabil ";
+      status+=String(left)+" s";break;
+    case obd_trim::Stage::CollectIdle:
+      status="Leerlauf messen: "+String(left)+" s";break;
+    case obd_trim::Stage::WaitHigh:
+      status="Manuell ca. 2500 rpm halten / stabil ";
+      status+=String(left)+" s";break;
+    case obd_trim::Stage::CollectHigh:
+      status="2500 rpm messen: "+String(left)+" s";break;
+    case obd_trim::Stage::Done:status="Messung abgeschlossen / Simulation beachten";break;
+    case obd_trim::Stage::Failed:status="ABBRUCH: zu wenige frische Trimwerte";break;
+  }
+  lv_label_set_text(trimStageText,status.c_str());
+  String report;
+  report.reserve(850);
+  if(stage==obd_trim::Stage::WaitIdle || stage==obd_trim::Stage::WaitHigh){
+    report=(stage==obd_trim::Stage::WaitIdle)
+       ? "Schritt 1/2: 20 s Leerlaufmessung nach 3 s stabilem Leerlauf.\n"
+       : "Schritt 2/2: Drehzahl MANUELL ca. 2500 rpm halten.\n"
+         "Nach 3 s Stabilisierung werden 15 s gemessen.\n";
+    report+="Fahrzeug muss stehen (Tempo <3 km/h), RPM/Tempo frisch.\n";
+    if(stage==obd_trim::Stage::WaitHigh)
+      report+="Leerlauf bereits gespeichert, Test nicht unterbrechen.\n";
+  } else if(stage==obd_trim::Stage::Failed){
+    report="Der Adapter lieferte auch nach max. 30 s Extra-Zeit\n"
+           "keine 3 FRISCHEN Werte pro Trim-PID.\n"
+           "Ergebnis nicht verfuegbar. Neu starten.";
+  } else if(stage==obd_trim::Stage::Idle){
+    report="Nur passive Mode-01-Messung.\n"
+           "Je Phase STFT/LTFT B1+B2, optional MAF/MAP.\n"
+           "20 s Leerlauf + 15 s bei ca. 2500 rpm.\n"
+           "Keine automatische Drossel- oder Motorregelung.";
+  } else {
+    const auto &idle=trimTest.idle();
+    const auto &high=trimTest.high();
+    auto appendPhase=[&](const obd_trim::Phase &phase,const char *name){
+      report+=name;
+      report+="\n";
+      for(unsigned bank=0;bank<2;++bank){
+        const unsigned offset=bank*2;
+        report+="B"+String(bank+1)+" STFT "+trimNumber(phase.mean(offset));
+        report+="% LTFT "+trimNumber(phase.mean(offset+1));
+        report+="% Gesamt "+trimNumber(phase.bankTotal(bank))+"%\n";
+      }
+      report+="MAF "+trimNumber(phase.mean(4),2)+" g/s, MAP ";
+      report+=trimNumber(phase.mean(5),0)+" kPa\n";
+      report+="Werte B1/B2: STFT "+String(phase.channels[0].count);
+      report+="/"+String(phase.channels[2].count)+"  LTFT ";
+      report+=String(phase.channels[1].count)+"/"+String(phase.channels[3].count)+"\n\n";
+    };
+    if(stage==obd_trim::Stage::CollectIdle || stage==obd_trim::Stage::Done)
+      appendPhase(idle,"LEERLAUF");
+    if(stage==obd_trim::Stage::CollectHigh || stage==obd_trim::Stage::Done)
+      appendPhase(high,"CA. 2500 RPM");
+    if(stage==obd_trim::Stage::Done){
+      report+="M272 DIAGNOSEHINWEISE (ORIENTIERUNG):\n";
+      bool hasHint=false;
+      if(trimTest.bankDifference()){report+="Bankdifferenz >=5%: bankspezifisch pruefen.\n";hasHint=true;}
+      if(trimTest.likelyVacuumPattern()){report+="Leerlauf-Plus sinkt bei 2500: Falschluft moeglich.\n";hasHint=true;}
+      if(trimTest.highPositiveBothPhases()){report+="Korrektur in beiden Phasen >10%: MAF/Kraftstoff pruefen.\n";hasHint=true;}
+      if(trimTest.negativeLarge()){report+="Gesamtkorrektur <-10%: Gemisch zu fett moeglich.\n";hasHint=true;}
+      if(!hasHint)report+="Keine eindeutige Abweichung >10% im Schema.\n";
+      report+="Nur Diagnosehilfe, kein Herstellertest.";
+    }
+  }
+  lv_label_set_text(trimReportText,report.c_str());
+  lastTrimRenderedStage=stage;
+}
+static void updateExtraData() {
+  if (!extraDataText) return;
+  String summary;
+  summary.reserve(1024);
+  for (std::size_t i=0;i<obd_pids::count;++i) {
+    const auto &p=obd_pids::catalog[i];
+    summary += p.title;
+    summary += ": ";
+    if (!pidSupported(p.pid)) summary += "n/v";
+    else if (!pidValid[i]) summary += "--";
+    else summary += String(pidValues[i], static_cast<unsigned int>(p.decimals));
+    if (pidValid[i]) {
+      summary += " ";
+      summary += p.unit;
+    }
+    summary += "\n";
+  }
+  lv_label_set_text(extraDataText, summary.c_str());
+}
 static void pollOnePid() {
-  const Command commands[] = {Command::Rpm, Command::Coolant, Command::Speed};
-  const uint8_t pids[] = {0x0C, 0x05, 0x0D};
-  uint8_t idx = pollIndex++ % 3;
-  if (!pidSupported(pids[idx])) return;
+  int index=-1;
+  if(trimTest.running()){
+    // During the test, prioritize fresh engine state and all four trims.
+    // Eight PIDs are sent sequentially via the SAME read-only transport;
+    // no simultaneous requests, no commands added to the allowlist.
+    static const uint8_t priorityPids[]={
+      0x0C,0x0D,0x06,0x07,0x08,0x09,0x10,0x0B};
+    for(uint8_t n=0;n<8;++n){
+      const uint8_t pid=priorityPids[trimPollIndex];
+      trimPollIndex=(trimPollIndex+1)%8;
+      if(!pidSupported(pid))continue;
+      index=obd_pids::indexOf(pid);
+      if(index>=0)break;
+    }
+  } else {
+    index=pollScheduler.choose(millis(),pidMasks);
+  }
+  if (index < 0) return;
+  const auto &p = obd_pids::catalog[index];
   String response;
-  if (!transact(commands[idx], response)) { markDisconnected("ELM327: Timeout/Sync-Verlust"); return; }
-  uint8_t b[2];
-  if (!obd_response::readPid(response.c_str(), pids[idx], b, idx == 0 ? 2 : 1)) {
-    ++inputErrorCount;  // A reply with a prompt but no matching PID is unavailable, never zero.
+  const uint32_t started=millis();
+  if (!transact(p.command, response)) {
+    markDisconnected("ELM327: Timeout/Sync-Verlust"); return;
+  }
+  uint8_t bytes[2];
+  if (!obd_response::readPid(response.c_str(), p.pid, bytes,
+                             obd_pids::bytesNeeded(p.formula))) {
+    // A previous measurement is no longer valid when this PID was polled
+    // but no usable reply arrived. Never display an obsolete reading.
+    pidValid[index] = false;
+    ++inputErrorCount;
+    if (p.pid==0x0C) {
+      rpm=-1;
+      lv_label_set_text(rpmText,"-- rpm");
+      if (engineStateText) lv_label_set_text(engineStateText,
+          "RPM derzeit n/v");
+    } else if (p.pid==0x05) {
+      coolantC=-1000;
+      lv_label_set_text(coolantText,"-- C");
+    } else if (p.pid==0x0D) {
+      speedKph=-1;
+      lv_label_set_text(speedText,"-- km/h");
+    }
+    updateExtraData();
+    Serial.printf("PID_UNAVAILABLE,01%02X\n",p.pid);
     return;
   }
-  if (idx == 0) {
-    rpm = (256*(int)b[0] + b[1])/4;
+  double value;
+  if (!obd_pids::decode(p, bytes, obd_pids::bytesNeeded(p.formula), value))
+    return;
+  pidValues[index]=value;
+  pidValid[index]=true;
+  trimTest.sample(p.pid,value,millis());
+  if (p.pid==0x0C) {
+    rpm=(int)value;
     lv_label_set_text_fmt(rpmText, "%d rpm", rpm);
-    lv_chart_set_next_value(rpmChart, rpmSeries, rpm);
-  } else if (idx == 1) {
-    coolantC = (int)b[0]-40;
+    lv_chart_set_next_value(rpmChart,rpmSeries,rpm);
+    if (engineStateText)
+      lv_label_set_text(engineStateText,
+        rpm==0 ? "KOEO: Motor aus" : "KOER: Motor laeuft");
+  } else if (p.pid==0x05) {
+    coolantC=(int)value;
     lv_label_set_text_fmt(coolantText, "%d C", coolantC);
-  } else {
-    speedKph = b[0];
+  } else if (p.pid==0x0D) {
+    speedKph=(int)value;
     lv_label_set_text_fmt(speedText, "%d km/h", speedKph);
   }
-  Serial.printf("SAMPLE,%lu,%d,%d,%d\n", (unsigned long)millis(), rpm, coolantC, speedKph);
+  const uint32_t sampledAt=millis();
+  const uint32_t latency=sampledAt-started;
+  Serial.printf("CSV,%lu,01%02X,%s,%.*f,%s,%lu\n",
+      (unsigned long)sampledAt,p.pid,p.title,p.decimals,value,p.unit,
+      (unsigned long)latency);
+  char row[112];
+  sdWrite(row, obd_log::pidRow(row, sizeof row, sampledAt, p.pid, p.title,
+                               value, p.decimals, p.unit, latency));
+  if (millis()-lastExtraRefresh >= 500) {
+    updateExtraData(); lastExtraRefresh=millis();
+  }
 }
 
 static void scanOneDtcMode() {
@@ -423,17 +1008,196 @@ static void scanOneDtcMode() {
   const char *names[] = {"03 gespeichert", "07 ausstehend", "0A permanent"};
   if (dtcIndex >= 3) { dtcScanRequested = false; return; }
   String answer;
+  const uint32_t generation = diagGeneration;
   if (!transact(modes[dtcIndex], answer, 3500)) {
     markDisconnected("DTC: Timeout/Sync-Verlust");
     dtcScanRequested = false; return;
   }
-  // Raw result, deliberately not parsed as trustworthy ECU error codes yet.
+  if (generation != diagGeneration) return; // superseded during transact
   Serial.printf("DTC_RAW,%s,%s\n", names[dtcIndex], answer.c_str());
-  String preview = answer.substring(0, 38);
-  lv_label_set_text_fmt(dtcModeText[dtcIndex], "%s: %s", names[dtcIndex], preview.c_str());
-  lv_label_set_text(scanText, "Leseabfrage abgeschlossen / Rohdaten");
+  const uint8_t responseMode[] = {0x43,0x47,0x4A};
+  auto dtcs=obd_isotp::parseDtcs(answer.c_str(),responseMode[dtcIndex],dtcEncoding);
+  dtcReport+=String(names[dtcIndex])+": ";
+  if (!dtcs.gotAnswer || dtcs.malformed) {
+    dtcReport+="NICHT SICHER DEKODIERBAR\n";
+    dtcReport+="  RAW: "+answer.substring(0,100)+"\n\n";
+  } else {
+    dtcReport+=String(dtcs.count)+" verschiedene Codes";
+    dtcReport+=" / "+String(dtcs.ecuResponses);
+    dtcReport+=dtcs.ecuResponses==1 ? " Antwortblock\n" : " Antwortbloecke\n";
+    for(std::size_t k=0;k<dtcs.count;++k){
+      const char *code=dtcs.entries[k].code;
+      dtcReport+="  "+String(code);
+      const char *description=obd_dtc_names::describe(code);
+      if(description)dtcReport+=": "+String(description);
+      dtcReport+="\n";
+      const char *hint=obd_diag::m272Hint(code);
+      if(hint)dtcReport+="  Hinweis: "+String(hint)+"\n";
+    }
+    dtcReport+="\n";
+  }
+  if (dtcDetailText)lv_label_set_text(dtcDetailText,dtcReport.c_str());
+  if (!dtcs.gotAnswer || dtcs.malformed) {
+    // One line only: multi-line ELM replies would overflow into the next
+    // mode's row. The full reply stays in DETAILS.
+    String preview=answer;
+    preview.replace('\n',' ');
+    preview.trim();
+    if (preview.length()>18) preview=preview.substring(0,18)+"...";
+    lv_label_set_text_fmt(dtcModeText[dtcIndex],"%s: RAW %s",
+                          names[dtcIndex],preview.c_str());
+    dtcScanUndecodable = true;
+    sdEvent(dtcIndex==0 ? "DTC 03 nicht sicher dekodierbar" :
+            dtcIndex==1 ? "DTC 07 nicht sicher dekodierbar" :
+                          "DTC 0A nicht sicher dekodierbar");
+  } else if (dtcs.count==0) {
+    lv_label_set_text_fmt(dtcModeText[dtcIndex],"%s: keine",names[dtcIndex]);
+  } else {
+    if (dtcs.count>1)
+      lv_label_set_text_fmt(dtcModeText[dtcIndex],"%s: %s (+%u)",
+          names[dtcIndex],dtcs.entries[0].code,(unsigned)(dtcs.count-1));
+    else
+      lv_label_set_text_fmt(dtcModeText[dtcIndex],"%s: %s",
+          names[dtcIndex],dtcs.entries[0].code);
+    dtcScanCodes += static_cast<uint16_t>(dtcs.count);
+    static const char *modeIds[] = {"03","07","0A"};
+    for (std::size_t i=0;i<dtcs.count;++i) {
+      Serial.printf("DTC,%s,%s\n",names[dtcIndex],dtcs.entries[i].code);
+      char row[48];
+      sdWrite(row, obd_log::dtcRow(row, sizeof row, millis(),
+                                   modeIds[dtcIndex], dtcs.entries[i].code));
+    }
+  }
   ++dtcIndex;
-  if (dtcIndex == 3) dtcScanRequested = false;
+  if (dtcIndex < 3) {
+    lv_label_set_text_fmt(scanText,"Lese %s...",names[dtcIndex]);
+    return;
+  }
+  dtcScanRequested = false;
+  // Undecodable beats "keine": an unreadable mode may hide codes.
+  if (dtcScanUndecodable)
+    lv_label_set_text(scanText,"RAW -> DETAILS");
+  else if (dtcScanCodes>0)
+    lv_label_set_text_fmt(scanText,"%u Codes -> DETAILS",(unsigned)dtcScanCodes);
+  else
+    lv_label_set_text(scanText,"Keine DTCs");
+}
+
+static void scanInspectionStep() {
+  static const Command commands[] = {
+      Command::Readiness,Command::MilDistance,Command::Warmups,
+      Command::ClearDistance,Command::FreezeDtc,Command::StoredDtcs,
+      Command::PendingDtcs,Command::PermanentDtcs};
+  if (inspectionStep>=8) {inspectionRequested=false;return;}
+  if (inspectionStep<=3) {
+    // Mode 01 steps: only ask for PIDs the ECU announced in 0100/0120.
+    static const uint8_t stepPids[]={0x01,0x21,0x30,0x31};
+    static const char *stepNames[]={
+        "Readiness","km mit MIL","Warmlaeufe nach Reset","km nach Reset"};
+    if (!pidSupported(stepPids[inspectionStep])) {
+      inspectionReport+=String(stepNames[inspectionStep])+": von ECU nicht unterstuetzt\n";
+      lv_label_set_text(inspectionText,inspectionReport.c_str());
+      ++inspectionStep;
+      return;
+    }
+  }
+  const Command c=commands[inspectionStep];
+  String response;
+  const uint32_t generation=diagGeneration;
+  if (!transact(c,response,3500)) {
+    markDisconnected("HU/AU: Adapter-Synchronisation verloren");
+    inspectionRequested=false; return;
+  }
+  if (generation!=diagGeneration) return; // superseded during transact
+  uint8_t data[2] = {};
+  if (inspectionStep==0) {
+    obd_diag::Readiness readiness;
+    if (obd_diag::parseReadiness(response.c_str(),readiness)) {
+      inspectionReport += "MIL: ";
+      inspectionReport += readiness.mil ? "AN\n" : "AUS\n";
+      inspectionReport += "ECU-DTC-Anzahl: "+String(readiness.dtcs)+"\n";
+      inspectionReport += "ECUs: "+String(readiness.ecus)+"\n";
+      inspectionReport += "Monitore offen: "+String(readiness.incompleteCount())+"\n";
+      for (int i=0;i<11;++i) {
+        const bool supported=i<3 ?
+            (readiness.supportedContinuous & (1u<<i)) :
+            (readiness.supportedOther & (1u<<(i-3)));
+        if (!supported) continue;
+        const bool incomplete=i<3 ?
+            (readiness.openContinuous & (1u<<i)) :
+            (readiness.openOther & (1u<<(i-3)));
+        inspectionReport += String(obd_diag::monitorName(i,readiness.compression));
+        inspectionReport += incomplete ? ": offen\n" : ": fertig\n";
+      }
+      if (readiness.mil || readiness.dtcs>0 || readiness.incompleteCount()>0)
+        inspectionReport += "OBD-Monitore: auffaellig\n";
+      else inspectionReport += "OBD-Monitore: derzeit abgeschlossen\n";
+    } else inspectionReport += "Readiness: nicht verfuegbar\n";
+  } else if (inspectionStep>=1 && inspectionStep<=3) {
+    const uint8_t pids[]={0x21,0x30,0x31};
+    const char *labels[]={"km mit MIL","Warmlaeufe nach Reset","km nach Reset"};
+    uint8_t pid=pids[inspectionStep-1];
+    const int needed=pid==0x30?1:2;
+    if (obd_response::readPid(response.c_str(),pid,data,needed)) {
+      int v=needed==1 ? data[0] : (data[0]<<8)|data[1];
+      inspectionReport+=String(labels[inspectionStep-1])+": "+String(v)+"\n";
+    } else inspectionReport+=String(labels[inspectionStep-1])+": n/v\n";
+  } else if (inspectionStep==4) {
+    if (obd_response::readFreezeFrame00(response.c_str(),0x02,data,2)) {
+      if (data[0]!=0 || data[1]!=0) {
+        char code[6];obd_diag::decodeDtc(data[0],data[1],code);
+        inspectionReport+="Freeze-Frame DTC: "+String(code)+"\n";
+      } else inspectionReport+="Freeze-Frame DTC: keiner\n";
+    } else inspectionReport+="Freeze-Frame DTC: n/v\n";
+  } else {
+    const char *labels[]={"Gespeichert","Pending","Permanent"};
+    const uint8_t modes[]={0x43,0x47,0x4A};
+    const uint8_t i=inspectionStep-5;
+    auto dtcs=obd_isotp::parseDtcs(response.c_str(),modes[i],dtcEncoding);
+    if(!dtcs.gotAnswer || dtcs.malformed)
+      inspectionReport+=String(labels[i])+": nicht sicher lesbar\n";
+    else {
+      inspectionReport+=String(labels[i])+": "+String(dtcs.count)+"\n";
+      for (std::size_t c=0;c<dtcs.count && c<8;++c)
+        inspectionReport+="  "+String(dtcs.entries[c].code)+"\n";
+    }
+  }
+  lv_label_set_text(inspectionText,inspectionReport.c_str());
+  ++inspectionStep;
+  if (inspectionStep>=8) {
+    inspectionReport+="OBD-Vorabcheck beendet. Keine amtliche HU/AU-Freigabe.\n";
+    lv_label_set_text(inspectionText,inspectionReport.c_str());
+    inspectionRequested=false;
+  }
+}
+
+static void scanMisfireStep() {
+  if(misfireStep>=6){misfireRequested=false;return;}
+  static const Command modes[]={
+      Command::MisfireCyl1,Command::MisfireCyl2,Command::MisfireCyl3,
+      Command::MisfireCyl4,Command::MisfireCyl5,Command::MisfireCyl6};
+  String reply;
+  const uint32_t generation=diagGeneration;
+  if(!transact(modes[misfireStep],reply,3500)){
+    markDisconnected("Mode06: Adapter-Synchronisation verloren");
+    misfireRequested=false;return;
+  }
+  if(generation!=diagGeneration)return; // superseded during transact
+  obd_diag::Misfire m;
+  const uint8_t cyl=misfireStep+1;
+  misfireReport+="Zyl. "+String(cyl)+" (B"+String(cyl<=3?1:2)+"): ";
+  if(obd_diag::parseMisfire(reply.c_str(),cyl,m)) {
+    misfireReport+="EWMA "+String(m.hasEwma ? String(m.ewma) : String("--"));
+    misfireReport+=" / Zyklus "+String(m.hasCurrent ? String(m.current) : String("--"));
+  } else misfireReport+="nicht verfuegbar (UASID24)";
+  misfireReport+="\n";
+  lv_label_set_text(misfireText,misfireReport.c_str());
+  ++misfireStep;
+  if(misfireStep>=6){
+    misfireReport+="Nur SAE Mode06. Keine Stellgliedpruefung.\n";
+    lv_label_set_text(misfireText,misfireReport.c_str());
+    misfireRequested=false;
+  }
 }
 #endif // OBD_CONNECTED_BUILD
 
@@ -462,7 +1226,11 @@ void setup() {
   lv_indev_drv_register(&indev);
   buildUi();
 #if OBD_CONNECTED_BUILD
+  sdBegin();
   WiFi.mode(WIFI_STA);
+  // Modem sleep only wakes the radio per DTIM beacon and adds hundreds of
+  // ms per request/reply; this display is powered by the vehicle anyway.
+  WiFi.setSleep(false);
   WiFi.begin(ELM_WIFI_SSID, ELM_WIFI_PASSWORD);
   lastAttempt = millis();
 #if defined(OBD_LAB_BUILD)
@@ -478,6 +1246,7 @@ void setup() {
   lv_label_set_text(statusText, "OFFLINE-TEST | WLAN und OBD AUS");
   lv_label_set_text(linkText, "WLAN / OBD: ausgeschaltet");
   lv_label_set_text(statsText, "Offline: kein WLAN, keine ECU-Kommandos");
+  lv_label_set_text(sdText, "SD: Logging nur mit Adapter-Verbindung");
   Serial.println("OBD DIAG: OFFLINE DEMO; NO WIFI, NO VEHICLE COMMANDS");
 #endif
 }
@@ -498,10 +1267,24 @@ void loop() {
       markDisconnected("ELM327/ECU nicht erreichbar");
     }
   }
-  if (adapterReady && now - lastPoll >= POLL_INTERVAL_MS) {
-    lastPoll = now;
-    if (dtcScanRequested) scanOneDtcMode();
+  // Next request as soon as the previous prompt arrived (plus a short gap),
+  // instead of a fixed 350 ms cadence that wasted most of the link time.
+  if (adapterReady && now - lastCommandDone >= COMMAND_GAP_MS) {
+    if (inspectionRequested) scanInspectionStep();
+    else if (misfireRequested) scanMisfireStep();
+    else if (dtcScanRequested) scanOneDtcMode();
     else pollOnePid();
+    lastCommandDone = millis();
+  }
+  updateLinkStats(millis());
+  sdFlushIfDue(millis());
+  if(trimTest.running()) trimTest.tick(millis());
+  if(millis()-lastTrimUi>=500) {
+    lastTrimUi=millis();
+    // Completed reports are immutable; avoid repeated LVGL redraw/heap churn.
+    if(trimTest.running() || ((trimTest.stage()==obd_trim::Stage::Done ||
+        trimTest.stage()==obd_trim::Stage::Failed) &&
+        trimTest.stage()!=lastTrimRenderedStage)) renderTrimPage();
   }
 #endif
   delay(5);

@@ -4,6 +4,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Each source update supersedes its predecessor; compile only the latest
+# revision on each branch/PR instead of queuing dozens of ESP32 toolchains.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   policy:
     runs-on: ubuntu-latest
@@ -15,6 +21,18 @@ jobs:
           /tmp/obd-policy-test
           g++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/ObdDisplay tests/test_obd_response_parser.cpp -o /tmp/obd-parser-test
           /tmp/obd-parser-test
+          g++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/ObdDisplay tests/test_obd_pid_catalog.cpp -o /tmp/obd-pid-catalog-test
+          /tmp/obd-pid-catalog-test
+          g++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/ObdDisplay tests/test_obd_diagnostics.cpp -o /tmp/obd-diagnostics-test
+          /tmp/obd-diagnostics-test
+          g++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/ObdDisplay tests/test_obd_iso_tp.cpp -o /tmp/obd-iso-tp-test
+          /tmp/obd-iso-tp-test
+          g++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/ObdDisplay tests/test_fuel_trim.cpp -o /tmp/obd-fuel-trim-test
+          /tmp/obd-fuel-trim-test
+          g++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/ObdDisplay tests/test_poll_scheduler.cpp -o /tmp/obd-poll-scheduler-test
+          /tmp/obd-poll-scheduler-test
+          g++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/ObdDisplay tests/test_sd_log_format.cpp -o /tmp/obd-sd-log-test
+          /tmp/obd-sd-log-test
           python3 -m unittest discover -s tests -p 'test_*.py' -v
 
   firmware:
