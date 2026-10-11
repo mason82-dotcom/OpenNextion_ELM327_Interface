@@ -69,7 +69,7 @@ müssen CI und `bash scripts/pi/build.sh lab` erfolgreich sein.
 | Readiness 0101 | **Portiert** | Mehrere gültige ECU-Antworten zusammengeführt |
 | Mode06 Zylinder-Aussetzer | **Portiert** für `06A2…06A7` | Nur unzweideutige UASID 0x24-Zähler. Unbekannte Werte als nicht verfügbar |
 | Freeze-Frame | **DTC aus 020200 portiert** | Vollständige Snapshot-PID-Anzeige noch ausstehend |
-| Geführter 20s Leerlauf / 15s 2500 rpm-Fuel-Trim-Test | **Ausstehend** | Nicht durch ungeprüfte Automatik ersetzen |
+| Geführter 20s Leerlauf / 15s 2500 rpm-Fuel-Trim-Test | **Phase 2 implementiert – noch keine Hardware-Abnahme** | Nur neue frische STFT-/LTFT-Werte, RPM-/Tempo-Stabilitätsfenster, Timeout statt Scheinbericht. [LAB-Testanleitung](FUEL-TRIM-LAB-TEST.md) |
 | ELM-Kommandoterminal | **Ausstehend** | Kein frei eingebbarer Terminalzugriff; niemals Raw-CAN-Durchleitung |
 | CSV | **USB-Serial-Zeilen portiert** | Keine persistente microSD-/Flash-Datei, keine echte Echtzeit-Uhr |
 | Robustere Reconnect-, Timeout-Resync-, Session-Policy der Android-App | **Ausstehend** | Aktuelles Fail-Closed-Verhalten trennt bei Syncverlust |
@@ -83,12 +83,15 @@ müssen CI und `bash scripts/pi/build.sh lab` erfolgreich sein.
 - **DTC**: ausschließlich manueller Modus 03/07/0A Scan;
   **HU/AU** öffnet den separaten emissionsbezogenen Vorcheck.
 - **ALLE PIDS**: STFT, LTFT, MAF, MAP etc.; **MODE 06** öffnet
-  den manuellen Aussetzercheck für Zylinder 1 bis 6.
+  den manuellen Aussetzercheck für Zylinder 1 bis 6. **TRIM-TEST**
+  führt zur passiven Leerlauf-/2500-rpm-Testseite; keine Motorbefehle.
 - **INFO**: Linkstatus, Befehls-/Timeoutzähler, Touch-Test.
 
-Die zusätzlichen Diagnoseansichten pausieren das Live-Polling während
-ihrer Einzelabfragen; alle Kommandos passieren dieselbe geschlossene,
-typisierte `ReadOnlyPolicy.h`-Allowlist.
+Die bisherigen Einzel-Diagnoseansichten pausieren das Live-Polling während
+ihrer Einzelabfragen. Der Fuel-Trim-Test verwendet **stattdessen** das
+gleiche schreibgeschützte sequenzielle Mode-01-Live-Polling und priorisiert
+RPM, Tempo und die vier Trim-Kanäle. Alle Kommandos passieren dieselbe
+geschlossene, typisierte `ReadOnlyPolicy.h`-Allowlist.
 
 ## Pi 5: neuen Entwicklungsbranch verwenden
 
@@ -210,3 +213,18 @@ Fahrzeugsteuergeräte. Ein anschließender Reboot-/Langzeittest ist offen.
 Der Simulator besitzt keinerlei Verbindung zu einem Fahrzeug; seine
 Antworten dürfen nicht als reale Diagnosewerte interpretiert werden.
 
+
+
+## Phase 2: Geführter Fuel-Trim-Test
+
+Der vom Android-Projekt portierte C++17-Testzustandsautomat befindet sich in
+`firmware/ObdDisplay/FuelTrimTest.h` und die native Regression in
+`tests/test_fuel_trim.cpp`. Die neue Touchseite `TRIM-TEST` startet,
+führt und beendet die passive Messung. Der Pi-Simulator erlaubt eine
+**manuelle Test-RPM-Änderung** über `--rpm-file` ohne Fahrzeug und ohne
+andere Kommandos. Genaue Zeiten, Voraussetzungen, sichere Pi-Kommandos,
+Fehlersimulation: [FUEL-TRIM-LAB-TEST.md](FUEL-TRIM-LAB-TEST.md).
+
+**Noch offen:** GitHub- und lokaler ESP32-Compile sowie der praktische
+45+-Sekunden-Zwei-Phasen-Test am Display. Eine alte erfolgreich
+geflashte LAB-Firmware enthält diese Funktionen noch nicht.
