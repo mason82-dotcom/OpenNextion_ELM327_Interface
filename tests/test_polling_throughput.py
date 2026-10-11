@@ -28,6 +28,14 @@ class PollingThroughputTest(unittest.TestCase):
         self.assertLess(body.index("else pollOnePid();"),
                         body.index("lastCommandDone = millis();"))
 
+    def test_wlan_stays_awake_and_tolerates_latency_spikes(self):
+        setup = section("void setup() {", "void loop() {")
+        self.assertLess(setup.index("WiFi.mode(WIFI_STA);"),
+                        setup.index("WiFi.setSleep(false);"))
+        timeout = re.search(r"CMD_TIMEOUT_MS = (\d+);", SRC)
+        self.assertGreaterEqual(int(timeout.group(1)), 2500)
+        self.assertNotIn(", 1700)", SRC)
+
     def test_stats_label_is_not_redrawn_per_command(self):
         transact = section("static bool transact(", "static void updateLinkStats(")
         self.assertNotIn("statsText", transact)

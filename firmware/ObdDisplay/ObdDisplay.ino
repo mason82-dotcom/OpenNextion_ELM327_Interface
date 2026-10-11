@@ -45,7 +45,10 @@ static constexpr uint32_t WIFI_RETRY_MS = 12000;
 // itself is capped by the per-PID intervals in ObdPidCatalog.h.
 static constexpr uint32_t COMMAND_GAP_MS = 25;
 static constexpr uint16_t BUF_LINES = 40;
-static constexpr uint32_t CMD_TIMEOUT_MS = 1700;
+// Measured on the bench: WLAN round trips spike to 0.5-1.6 s while either
+// side is in power save, so 1.7 s dropped the whole session (and any running
+// Fuel-Trim test) on a single late reply.
+static constexpr uint32_t CMD_TIMEOUT_MS = 2500;
 static constexpr uint32_t PROTOCOL_SEARCH_TIMEOUT_MS = 12000;
 // WiFiClient::connect blocks the UI; a LAN TCP handshake needs far less.
 static constexpr int32_t ADAPTER_CONNECT_TIMEOUT_MS = 1000;
@@ -637,7 +640,7 @@ static bool initAdapter() {
       Command::AdapterSpacesOff, Command::AdapterHeadersOff, Command::AdapterAutoProtocol};
   String response;
   for (Command c : setup) {
-    if (!transact(c, response, c == Command::AdapterReset ? 3500 : 1700)) return false;
+    if (!transact(c, response, c == Command::AdapterReset ? 3500 : CMD_TIMEOUT_MS)) return false;
     if (response.indexOf('?') >= 0 || response.indexOf("ERROR") >= 0) return false;
 #if defined(OBD_LAB_BUILD)
     // Fail closed: no PID/DTC request unless the dedicated Pi simulator
@@ -667,7 +670,7 @@ static bool initAdapter() {
   }
   // ATDPN is only meaningful after the protocol search above; before it
   // a real ELM327 reports "A0" and every DTC list would stay undecodable.
-  if (!transact(Command::AdapterProtocolId, response, 1700)) return false;
+  if (!transact(Command::AdapterProtocolId, response, CMD_TIMEOUT_MS)) return false;
   String proto = response;
   proto.trim();
   if (proto.startsWith("A") && proto.length() == 2) proto.remove(0,1);
@@ -1090,6 +1093,9 @@ void setup() {
   buildUi();
 #if OBD_CONNECTED_BUILD
   WiFi.mode(WIFI_STA);
+  // Modem sleep only wakes the radio per DTIM beacon and adds hundreds of
+  // ms per request/reply; this display is powered by the vehicle anyway.
+  WiFi.setSleep(false);
   WiFi.begin(ELM_WIFI_SSID, ELM_WIFI_PASSWORD);
   lastAttempt = millis();
 #if defined(OBD_LAB_BUILD)
