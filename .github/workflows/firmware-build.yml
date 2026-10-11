@@ -4,6 +4,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Each source update supersedes its predecessor; compile only the latest
+# revision on each branch/PR instead of queuing dozens of ESP32 toolchains.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   policy:
     runs-on: ubuntu-latest
