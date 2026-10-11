@@ -46,6 +46,26 @@ class LabTest(unittest.TestCase):
             filename.unlink()
             self.assertIsNone(lab.fault_pid_from_file(str(filename)))
 
+    def test_manual_rpm_stage_fixture_without_changing_vehicle_or_tcp(self):
+        self.assertEqual(lab.answer_for("010C", rpm_override=800), "41 0C 0C 80")
+        self.assertEqual(lab.answer_for("010C", rpm_override=2500), "41 0C 27 10")
+        self.assertEqual(lab.answer_for("010C", rpm_override=1234), "41 0C 13 48")
+        self.assertEqual(lab.answer_for("0105", rpm_override=800), "41 05 82")
+        self.assertEqual(lab.answer_for("010C", fault_pid="010C", rpm_override=800),
+                         "NO DATA")
+
+    def test_rpm_file_override_range_validation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            filename = pathlib.Path(tmp) / "rpm"
+            self.assertIsNone(lab.rpm_from_file(str(filename)))
+            for src, expected in (("800\\n", 800), ("2500\\n", 2500),
+                                  ("0\\n", 0), ("7000\\n", 7000)):
+                filename.write_text(src, encoding="ascii")
+                self.assertEqual(lab.rpm_from_file(str(filename)), expected)
+            for invalid in ("7001", "-1", "0x800", "800.5", "foo", "99999"):
+                filename.write_text(invalid, encoding="ascii")
+                self.assertIsNone(lab.rpm_from_file(str(filename)))
+
     def test_adapter_setup(self):
         self.assertEqual(lab.answer_for("ATSP0"), "OK")
         self.assertEqual(lab.answer_for("ATZ"), "ELM327 LAB SIM v0.1")
