@@ -8,6 +8,7 @@ from pathlib import Path
 import socket
 import tempfile
 import threading
+import time
 import unittest
 
 
@@ -41,6 +42,7 @@ class SimulatorTcpTest(unittest.TestCase):
         cls.server.dtc_file = str(cls.fixture)
         cls.server.rpm_file = str(cls.rpm)
         cls.server.fault_file = str(cls.fault)
+        cls.server.search_delay = 0.0
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
         cls.address = cls.server.server_address
@@ -64,7 +66,7 @@ class SimulatorTcpTest(unittest.TestCase):
         self.sock.close()
 
     def test_indexed_frames_and_hot_switch_on_same_tcp_session(self):
-        self.assertEqual(exchange(self.sock, "ATDPN"), "A6\r>")
+        exchange(self.sock, "0100")  # completes the ATSP0 protocol search
         self.assertEqual(exchange(self.sock, "03"), "43 00\r>")
         self.fixture.write_text("MULTI\n", encoding="ascii")
         reply = exchange(self.sock, "03")
@@ -83,7 +85,44 @@ class SimulatorTcpTest(unittest.TestCase):
         self.assertEqual(exchange(self.sock, "07"), "47 00\r>")
         self.assertEqual(exchange(self.sock, "0A"), "4A 00\r>")
 
+    def test_protocol_is_unknown_until_first_obd_request(self):
+        # A real ELM327 with ATSP0 reports "A0" before the protocol search.
+        self.assertEqual(exchange(self.sock, "ATSP0"), "OK\r>")
+        self.assertEqual(exchange(self.sock, "ATDPN"), "A0\r>")
+        self.assertEqual(exchange(self.sock, "ATH0"), "OK\r>")
+        self.assertEqual(exchange(self.sock, "04"), "?\r>")
+        self.assertEqual(exchange(self.sock, "ATDPN"), "A0\r>")
+        self.assertEqual(exchange(self.sock, "0100"),
+                         "SEARCHING...\r41 00 9F BB 80 01\r>")
+        self.assertEqual(exchange(self.sock, "ATDPN"), "A6\r>")
+        self.assertEqual(exchange(self.sock, "0100"), "41 00 9F BB 80 01\r>")
+        self.assertEqual(exchange(self.sock, "ATSP0"), "OK\r>")
+        self.assertEqual(exchange(self.sock, "ATDPN"), "A0\r>")
+
+    def test_new_tcp_session_starts_without_protocol(self):
+        exchange(self.sock, "0100")
+        self.assertEqual(exchange(self.sock, "ATDPN"), "A6\r>")
+        # One client at a time, as with a real ELM327 WLAN adapter.
+        self.sock.close()
+        self.sock = socket.create_connection(self.address, timeout=3)
+        self.sock.settimeout(3)
+        self.assertEqual(exchange(self.sock, "ATDPN"), "ATDPN\rA0\r>")
+
+    def test_first_obd_request_is_delayed_by_protocol_search(self):
+        self.server.search_delay = 0.3
+        try:
+            self.assertEqual(exchange(self.sock, "ATSP0"), "OK\r>")
+            started = time.monotonic()
+            self.assertIn("SEARCHING...", exchange(self.sock, "0100"))
+            self.assertGreaterEqual(time.monotonic() - started, 0.3)
+            started = time.monotonic()
+            self.assertNotIn("SEARCHING", exchange(self.sock, "0100"))
+            self.assertLess(time.monotonic() - started, 0.3)
+        finally:
+            self.server.search_delay = 0.0
+
     def test_invalid_pid_is_separate_from_dtc_fixtures(self):
+        exchange(self.sock, "0100")  # completes the ATSP0 protocol search
         self.fault.write_text("010C\n", encoding="ascii")
         self.assertEqual(exchange(self.sock, "010C"), "NO DATA\r>")
         self.assertEqual(exchange(self.sock, "0105"), "41 05 82\r>")

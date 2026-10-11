@@ -27,6 +27,15 @@ bash scripts/pi/build.sh offline
 python3 tools/elm327_lab_simulator.py --bind 127.0.0.1 --port 35000
 ```
 
+**Protokollsuche wie beim echten ELM327 (`ATSP0`):** Pro TCP-Sitzung
+meldet `ATDPN` bis zur ersten OBD-Anfrage `A0` (Protokoll unbekannt).
+Die erste OBD-Anfrage antwortet mit `SEARCHING...` und dauert
+standardmäßig 1,5 s (`--search-delay 0` bis `10`); danach meldet
+`ATDPN` `A6`. `ATZ` und `ATSP0` setzen das zurück. Die Firmware liest
+`ATDPN` deshalb erst nach `0100` und wartet auf diese erste Antwort
+bis zu 12 s. Der Simulator bedient wie ein WLAN-Dongle nur einen
+Client gleichzeitig.
+
 In einem zweiten Pi-Terminal ist z. B. mit Python ein Test ohne
 Zusatzpakete möglich:
 

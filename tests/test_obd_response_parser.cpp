@@ -26,6 +26,10 @@ int main() {
   assert(supportedPids00("0100\r410008180000\r", mask) && mask == 0x08180000u);
   assert(supportedPids00("41 00 08 00 00 00\r41 00 00 18 00 00", mask));
   assert(mask == 0x08180000u);
+  // First request after ATSP0, as transact() stores it (CR -> LF).
+  assert(supportedPids00("SEARCHING...\n41 00 9F BB 80 01\n", mask));
+  assert(mask == 0x9FBB8001u);
+  assert(!supportedPids00("SEARCHING...\nUNABLE TO CONNECT\n", mask));
   assert(!supportedPids00("NO DATA\n", mask));
   assert(!supportedPids00("7E8 06 41 00 08 18 00 00", mask));
   assert(mask == 0);

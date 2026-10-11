@@ -2,6 +2,7 @@
 """Labor-only ELM327 TCP simulator. NO vehicle, Bluetooth, CAN or USB access."""
 import argparse
 import socketserver
+import time
 from pathlib import Path
 
 # Standard Mode 01 supported PIDs: 05 coolant, 0C RPM, 0D speed.
@@ -130,11 +131,36 @@ def dtc_fixture_from_file(path: str | None) -> str | None:
     return value if value in DTC_FIXTURES else None
 
 
+class ProtocolSearch:
+    """ATSP0 behaviour of a real ELM327 within one TCP session.
+
+    Until the first OBD request the protocol is unknown: ATDPN reports "A0".
+    That first request prints "SEARCHING..." and takes noticeably longer.
+    ATZ and ATSP0 forget the detected protocol again.
+    """
+    def __init__(self):
+        self.known = False
+
+    def respond(self, command: str, reply: str, search_delay: float = 0.0) -> str:
+        if command in ("ATZ", "ATSP0"):
+            self.known = False
+            return reply
+        if command == "ATDPN":
+            return reply if self.known else "A0"
+        if command.startswith("AT") or reply == "?" or self.known:
+            return reply
+        self.known = True
+        if search_delay > 0:
+            time.sleep(search_delay)
+        return "SEARCHING...\r" + reply
+
+
 class ElmCrHandler(socketserver.BaseRequestHandler):
     """ELM327-compatible CR terminator; one command per prompt."""
     def handle(self):
         self.request.settimeout(35)
         echo = True
+        protocol = ProtocolSearch()
         buf = bytearray()
         peer = self.client_address[0]
         print(f"[LAB] client {peer} connected", flush=True)
@@ -155,7 +181,9 @@ class ElmCrHandler(socketserver.BaseRequestHandler):
                         fault_pid = fault_pid_from_file(self.server.fault_file)
                         rpm_override = rpm_from_file(self.server.rpm_file)
                         fixture = dtc_fixture_from_file(self.server.dtc_file)
-                        reply = answer_for(cmd, fault_pid, rpm_override, fixture)
+                        reply = protocol.respond(
+                            cmd, answer_for(cmd, fault_pid, rpm_override, fixture),
+                            getattr(self.server, "search_delay", 0.0))
                         if fixture and cmd in ("03", "07", "0A"):
                             print(f"[LAB] DTC FIXTURE {fixture} for {cmd}", flush=True)
                         if reply == "NO DATA" and fault_pid == cmd:
@@ -195,11 +223,16 @@ def main():
                         help="optional local file with simulated RPM from 0..7000 (no vehicle access)")
     parser.add_argument("--dtc-file", default=None,
                         help="optional local DTC fixture selector: MULTI, TWO, TRUNCATED, BAD_SEQUENCE")
+    parser.add_argument("--search-delay", type=float, default=1.5,
+                        help="seconds the first OBD request takes after ATZ/ATSP0 (ATSP0 protocol search)")
     args = parser.parse_args()
+    if not 0.0 <= args.search_delay <= 10.0:
+        parser.error("--search-delay must be between 0 and 10 seconds")
     with Server((args.bind, args.port), ElmCrHandler) as server:
         server.fault_file = args.fault_file
         server.rpm_file = args.rpm_file
         server.dtc_file = args.dtc_file
+        server.search_delay = args.search_delay
         print(f"[LAB] ELM327 simulator listening on {args.bind}:{args.port}", flush=True)
         if server.fault_file:
             print("[LAB] PID fault injection enabled (inactive until file exists)", flush=True)

@@ -44,6 +44,7 @@ static constexpr uint32_t WIFI_RETRY_MS = 12000;
 static constexpr uint32_t POLL_INTERVAL_MS = 350;
 static constexpr uint16_t BUF_LINES = 40;
 static constexpr uint32_t CMD_TIMEOUT_MS = 1700;
+static constexpr uint32_t PROTOCOL_SEARCH_TIMEOUT_MS = 12000;
 
 Arduino_DataBus *bus = new Arduino_HWSPI(
     LCD_DC_PIN, LCD_CS_PIN, LCD_SCLK_PIN, LCD_MOSI_PIN, LCD_MISO_PIN, &SPI, true);
@@ -607,16 +608,9 @@ static bool initAdapter() {
     }
 #endif
   }
-  if (!transact(Command::AdapterProtocolId, response, 1700)) return false;
-  String proto = response;
-  proto.trim();
-  if (proto.startsWith("A") && proto.length() == 2) proto.remove(0,1);
-  if (proto.length() == 1 && proto[0]>='6' && proto[0]<='9')
-    dtcEncoding = obd_diag::DtcEncoding::Can;
-  else if (proto.length() == 1 && proto[0]>='1' && proto[0]<='5')
-    dtcEncoding = obd_diag::DtcEncoding::Legacy;
-  else dtcEncoding = obd_diag::DtcEncoding::Unknown;
-  if (!transact(Command::SupportedPids00, response, 3000)) return false;
+  // With ATSP0 the ELM327 only searches the vehicle protocol on the first
+  // OBD request; "SEARCHING..." can take several seconds on ISO/KWP buses.
+  if (!transact(Command::SupportedPids00, response, PROTOCOL_SEARCH_TIMEOUT_MS)) return false;
   if (!obd_response::supportedBitmap(response.c_str(), 0x00, pidMasks[0])) return false;
   pidMasks[1] = pidMasks[2] = 0;
   if (pidMasks[0] & 1) {
@@ -629,6 +623,17 @@ static bool initAdapter() {
       } else return false;
     }
   }
+  // ATDPN is only meaningful after the protocol search above; before it
+  // a real ELM327 reports "A0" and every DTC list would stay undecodable.
+  if (!transact(Command::AdapterProtocolId, response, 1700)) return false;
+  String proto = response;
+  proto.trim();
+  if (proto.startsWith("A") && proto.length() == 2) proto.remove(0,1);
+  if (proto.length() == 1 && proto[0]>='6' && proto[0]<='9')
+    dtcEncoding = obd_diag::DtcEncoding::Can;
+  else if (proto.length() == 1 && proto[0]>='1' && proto[0]<='5')
+    dtcEncoding = obd_diag::DtcEncoding::Legacy;
+  else dtcEncoding = obd_diag::DtcEncoding::Unknown;
   pollScheduler.reset();
   for (std::size_t i=0;i<obd_pids::count;++i) pidValid[i]=false;
   adapterReady = true;
