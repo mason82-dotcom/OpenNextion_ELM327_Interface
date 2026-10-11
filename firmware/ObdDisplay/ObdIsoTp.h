@@ -69,6 +69,7 @@ inline obd_diag::DtcResult parseDtcs(const char *response,
   std::size_t used=0, expected=0;
   unsigned nextIndex=0;
   bool assembling=false;
+  bool sawNoData=false;
   auto finish=[&]() {
     if(!assembling)return;
     if(used!=expected || used==0){
@@ -129,9 +130,10 @@ inline obd_diag::DtcResult parseDtcs(const char *response,
     // Never present a partial successful ECU block as a *complete scan*
     // if the same ELM response also contains a link/transport failure.
     // Header-bearing raw CAN is not supported with the current ATH0 parser.
+    if(std::strstr(plain,"NO DATA")){sawNoData=true;return;}
     static const char *fatal[]={
       "BUFFER FULL","CAN ERROR","BUS ERROR","DATA ERROR",
-      "FB ERROR","STOPPED","UNABLE TO CONNECT","BUS INIT","NO DATA"};
+      "FB ERROR","STOPPED","UNABLE TO CONNECT","BUS INIT"};
     for(const char *term:fatal)
       if(std::strstr(plain,term)){result.malformed=true;return;}
     // Raw 11-bit or 29-bit CAN headers belong to ATH1 decoding,
@@ -157,6 +159,9 @@ inline obd_diag::DtcResult parseDtcs(const char *response,
     }
   }
   finish();
+  // A whole "NO DATA" response is not a valid empty DTC list,
+  // but is not by itself malformed. Mixed partial success is incomplete.
+  if(sawNoData && result.gotAnswer)result.malformed=true;
   return result;
 }
 } // namespace obd_isotp
