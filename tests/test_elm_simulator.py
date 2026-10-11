@@ -66,6 +66,27 @@ class LabTest(unittest.TestCase):
                 filename.write_text(invalid, encoding="ascii")
                 self.assertIsNone(lab.rpm_from_file(str(filename)))
 
+    def test_dtcs_multiframe_and_sequential_response_fixtures(self):
+        self.assertEqual(lab.answer_for("03", dtc_fixture="MULTI"),
+                         "00A\r0:43 04 01 71 03 01 03\r1:02 03 03")
+        self.assertIn("004\r0:43 01 01 74",
+                      lab.answer_for("03", dtc_fixture="TWO"))
+        self.assertEqual(lab.answer_for("07", dtc_fixture="MULTI"), "47 00")
+        self.assertEqual(lab.answer_for("04", dtc_fixture="MULTI"), "?")
+        self.assertEqual(lab.answer_for("03", dtc_fixture="UNKNOWN"), "43 00")
+
+    def test_dtc_fixture_allowlist_and_hot_switch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            filename = pathlib.Path(tmp) / "dtc_fixture"
+            self.assertIsNone(lab.dtc_fixture_from_file(str(filename)))
+            for value in ("MULTI", "TWO", "TRUNCATED", "BAD_SEQUENCE"):
+                filename.write_text(value, encoding="ascii")
+                self.assertEqual(lab.dtc_fixture_from_file(str(filename)), value)
+            filename.write_text("ATSH7E0", encoding="ascii")
+            self.assertIsNone(lab.dtc_fixture_from_file(str(filename)))
+            filename.unlink()
+            self.assertIsNone(lab.dtc_fixture_from_file(str(filename)))
+
     def test_adapter_setup(self):
         self.assertEqual(lab.answer_for("ATSP0"), "OK")
         self.assertEqual(lab.answer_for("ATZ"), "ELM327 LAB SIM v0.1")
