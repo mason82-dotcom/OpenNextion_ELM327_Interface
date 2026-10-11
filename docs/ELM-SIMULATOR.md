@@ -36,6 +36,14 @@ standardmäßig 1,5 s (`--search-delay 0` bis `10`); danach meldet
 bis zu 12 s. Der Simulator bedient wie ein WLAN-Dongle nur einen
 Client gleichzeitig.
 
+**Antwortzeit:** Jede Antwort kommt nach `--reply-delay` Sekunden
+(Standard 0,04 s, typisch für CAN über einen WLAN-ELM327; 0 bis 2 s).
+Die Firmware sendet den nächsten Befehl 25 ms nach dem `>`-Prompt;
+die Abfragerate begrenzen die PID-Intervalle (etwa 8–9 Anfragen/s,
+Drehzahl etwa 2 Hz). Auf der INFO-Seite stehen Befehle pro Sekunde und
+die letzte Antwortzeit. Mit `--reply-delay 0.3` lässt sich ein
+langsamer K-Line-/KWP-Adapter nachstellen.
+
 In einem zweiten Pi-Terminal ist z. B. mit Python ein Test ohne
 Zusatzpakete möglich:
 

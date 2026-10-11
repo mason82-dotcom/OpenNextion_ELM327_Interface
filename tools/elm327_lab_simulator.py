@@ -190,6 +190,9 @@ class ElmCrHandler(socketserver.BaseRequestHandler):
                             print(f"[LAB] INJECT NO DATA {cmd} (TCP remains open)", flush=True)
                         if reply == "?":
                             print(f"[LAB] REJECT {cmd}", flush=True)
+                        reply_delay = getattr(self.server, "reply_delay", 0.0)
+                        if reply_delay > 0:
+                            time.sleep(reply_delay)
                         payload = ((cmd + "\r") if echo else "") + reply + "\r>"
                         self.request.sendall(payload.encode("ascii"))
                         if cmd == "ATZ":
@@ -225,7 +228,11 @@ def main():
                         help="optional local DTC fixture selector: MULTI, TWO, TRUNCATED, BAD_SEQUENCE")
     parser.add_argument("--search-delay", type=float, default=1.5,
                         help="seconds the first OBD request takes after ATZ/ATSP0 (ATSP0 protocol search)")
+    parser.add_argument("--reply-delay", type=float, default=0.04,
+                        help="seconds before every reply; ~0.03-0.06 is typical for CAN via WLAN ELM327")
     args = parser.parse_args()
+    if not 0.0 <= args.reply_delay <= 2.0:
+        parser.error("--reply-delay must be between 0 and 2 seconds")
     if not 0.0 <= args.search_delay <= 10.0:
         parser.error("--search-delay must be between 0 and 10 seconds")
     with Server((args.bind, args.port), ElmCrHandler) as server:
@@ -233,6 +240,7 @@ def main():
         server.rpm_file = args.rpm_file
         server.dtc_file = args.dtc_file
         server.search_delay = args.search_delay
+        server.reply_delay = args.reply_delay
         print(f"[LAB] ELM327 simulator listening on {args.bind}:{args.port}", flush=True)
         if server.fault_file:
             print("[LAB] PID fault injection enabled (inactive until file exists)", flush=True)

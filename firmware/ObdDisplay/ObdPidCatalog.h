@@ -74,26 +74,35 @@ inline int indexOf(std::uint8_t pid) {
   for (std::size_t i=0;i<count;++i) if (catalog[i].pid==pid) return int(i);
   return -1;
 }
-// Priority reflects Android PollSchedule: faster engine / trim data, slower
+// Intervals reflect Android PollSchedule: faster engine / trim data, slower
 // coolant/long-term adaptations. Never send more than one ECU command at once.
+// Earliest deadline first: a never-polled PID goes first (catalog order),
+// otherwise the due PID that is overdue the longest. When nothing is due the
+// bus stays idle, so the intervals also cap the ECU request rate (~9/s).
+// Under overload (slow K-line/KWP adapters) lateness grows for every PID,
+// so no supported PID starves.
 class Scheduler {
   std::uint32_t last_[count] = {};
-  std::size_t cursor_ = 0;
+  bool polled_[count] = {};
 public:
-  void reset() { for (auto &x:last_) x=0; cursor_=0; }
+  void reset() {
+    for (auto &x:last_) x=0;
+    for (auto &p:polled_) p=false;
+  }
   int choose(std::uint32_t now, const std::uint32_t masks[3]) {
-    for (std::size_t n=0;n<count;++n) {
-      const std::size_t i=(cursor_+n)%count;
+    int best=-1;
+    std::uint32_t bestLate=0;
+    for (std::size_t i=0;i<count;++i) {
       const Item &item=catalog[i];
       if (!supported(item.pid,masks)) continue;
-      const std::uint32_t interval=item.intervalMs;
-      if (last_[i] == 0 || static_cast<std::uint32_t>(now-last_[i]) >= interval) {
-        last_[i] = now == 0 ? 1 : now;
-        cursor_ = (i+1)%count;
-        return static_cast<int>(i);
-      }
+      if (!polled_[i]) { best=static_cast<int>(i); break; }
+      const std::uint32_t age=now-last_[i]; // wraps correctly with millis()
+      if (age < item.intervalMs) continue;
+      const std::uint32_t late=age-item.intervalMs;
+      if (best < 0 || late > bestLate) { best=static_cast<int>(i); bestLate=late; }
     }
-    return -1;
+    if (best >= 0) { last_[best]=now; polled_[best]=true; }
+    return best;
   }
 };
 } // namespace obd_pids

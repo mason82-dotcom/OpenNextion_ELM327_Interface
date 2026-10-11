@@ -41,7 +41,9 @@
 using obd_policy::Command;
 static constexpr uint32_t LCD_SPI_HZ = 80000000;
 static constexpr uint32_t WIFI_RETRY_MS = 12000;
-static constexpr uint32_t POLL_INTERVAL_MS = 350;
+// Pause after the ELM '>' prompt before the next request. The request rate
+// itself is capped by the per-PID intervals in ObdPidCatalog.h.
+static constexpr uint32_t COMMAND_GAP_MS = 25;
 static constexpr uint16_t BUF_LINES = 40;
 static constexpr uint32_t CMD_TIMEOUT_MS = 1700;
 static constexpr uint32_t PROTOCOL_SEARCH_TIMEOUT_MS = 12000;
@@ -66,7 +68,7 @@ static uint32_t tapCount = 0;
 
 #if OBD_CONNECTED_BUILD
 static WiFiClient adapter;
-static uint32_t lastAttempt = 0, lastPoll = 0;
+static uint32_t lastAttempt = 0, lastCommandDone = 0;
 static bool adapterReady = false, dtcScanRequested = false;
 static int rpm = -1, coolantC = -1000, speedKph = -1;
 static uint32_t pidMasks[3] = {0, 0, 0};
@@ -85,6 +87,7 @@ static uint8_t dtcIndex = 0;
 static uint32_t diagGeneration = 0;
 static String dtcReport;
 static uint32_t txCount = 0, timeoutCount = 0, inputErrorCount = 0;
+static uint32_t lastLatencyMs = 0, lastStatsUi = 0, statsTxCount = 0;
 static obd_trim::Test trimTest;
 static uint32_t lastTrimUi=0;
 static obd_trim::Stage lastTrimRenderedStage=obd_trim::Stage::Idle;
@@ -509,16 +512,16 @@ static bool transact(Command command, String &answer, uint32_t timeoutMs = CMD_T
   adapter.print(wire);
   adapter.write('\r');
   ++txCount;
-  lv_label_set_text_fmt(statsText, "Gesendete Befehle: %lu\nTimeouts: %lu  Antwortfehler: %lu",
-      (unsigned long)txCount, (unsigned long)timeoutCount,
-      (unsigned long)inputErrorCount);
   answer = "";
   uint32_t start = millis();
   while (millis() - start < timeoutMs) {
     uiTick();
     while (adapter.available()) {
       char c = (char)adapter.read();
-      if (c == '>') return true;
+      if (c == '>') {
+        lastLatencyMs = millis() - start;
+        return true;
+      }
       if (answer.length() >= 1024) {
         ++inputErrorCount;
         adapter.stop();
@@ -534,6 +537,21 @@ static bool transact(Command command, String &answer, uint32_t timeoutMs = CMD_T
   ++timeoutCount;
   adapter.stop();
   return false;
+}
+
+// Once per second; avoids an LVGL label redraw for every single command.
+static void updateLinkStats(uint32_t now) {
+  const uint32_t elapsed = now - lastStatsUi;
+  if (elapsed < 1000) return;
+  const uint32_t sent = txCount - statsTxCount;
+  lv_label_set_text_fmt(statsText,
+      "Befehle: %lu  (%lu/s)\nTimeouts: %lu  Antwortfehler: %lu\n"
+      "Letzte Antwortzeit: %lu ms",
+      (unsigned long)txCount, (unsigned long)(sent * 1000UL / elapsed),
+      (unsigned long)timeoutCount, (unsigned long)inputErrorCount,
+      (unsigned long)lastLatencyMs);
+  statsTxCount = txCount;
+  lastStatsUi = now;
 }
 
 static void markDisconnected(const char *reason) {
@@ -1060,13 +1078,16 @@ void loop() {
       markDisconnected("ELM327/ECU nicht erreichbar");
     }
   }
-  if (adapterReady && now - lastPoll >= POLL_INTERVAL_MS) {
-    lastPoll = now;
+  // Next request as soon as the previous prompt arrived (plus a short gap),
+  // instead of a fixed 350 ms cadence that wasted most of the link time.
+  if (adapterReady && now - lastCommandDone >= COMMAND_GAP_MS) {
     if (inspectionRequested) scanInspectionStep();
     else if (misfireRequested) scanMisfireStep();
     else if (dtcScanRequested) scanOneDtcMode();
     else pollOnePid();
+    lastCommandDone = millis();
   }
+  updateLinkStats(millis());
   if(trimTest.running()) trimTest.tick(millis());
   if(millis()-lastTrimUi>=500) {
     lastTrimUi=millis();

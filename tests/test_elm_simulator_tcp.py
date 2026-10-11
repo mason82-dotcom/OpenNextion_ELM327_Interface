@@ -43,6 +43,7 @@ class SimulatorTcpTest(unittest.TestCase):
         cls.server.rpm_file = str(cls.rpm)
         cls.server.fault_file = str(cls.fault)
         cls.server.search_delay = 0.0
+        cls.server.reply_delay = 0.0
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
         cls.address = cls.server.server_address
@@ -120,6 +121,17 @@ class SimulatorTcpTest(unittest.TestCase):
             self.assertLess(time.monotonic() - started, 0.3)
         finally:
             self.server.search_delay = 0.0
+
+    def test_reply_delay_applies_to_every_command(self):
+        exchange(self.sock, "0100")
+        self.server.reply_delay = 0.1
+        try:
+            started = time.monotonic()
+            self.assertEqual(exchange(self.sock, "010C"), "41 0C 13 48\r>")
+            self.assertEqual(exchange(self.sock, "0105"), "41 05 82\r>")
+            self.assertGreaterEqual(time.monotonic() - started, 0.2)
+        finally:
+            self.server.reply_delay = 0.0
 
     def test_invalid_pid_is_separate_from_dtc_fixtures(self):
         exchange(self.sock, "0100")  # completes the ATSP0 protocol search
