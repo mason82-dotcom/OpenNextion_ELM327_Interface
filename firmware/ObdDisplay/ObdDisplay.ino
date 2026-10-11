@@ -616,6 +616,86 @@ static bool initAdapter() {
   return true;
 }
 
+// This view is presentation-only; it never communicates with the ELM adapter.
+static String trimNumber(double value,uint8_t decimals=1) {
+  return std::isfinite(value)
+      ? String(value, static_cast<unsigned int>(decimals)) : String("--");
+}
+static void renderTrimPage() {
+  if(!trimStageText || !trimReportText)return;
+  const auto stage=trimTest.stage();
+  const uint32_t left=(trimTest.remainingMs(millis())+999)/1000;
+  String status;
+  switch(stage){
+    case obd_trim::Stage::Idle: status="Bereit / manuell START";break;
+    case obd_trim::Stage::WaitIdle:
+      status="Leerlauf 550-1000 rpm / Stillstand, stabil ";
+      status+=String(left)+" s";break;
+    case obd_trim::Stage::CollectIdle:
+      status="Leerlauf messen: "+String(left)+" s";break;
+    case obd_trim::Stage::WaitHigh:
+      status="Manuell ca. 2500 rpm halten / stabil ";
+      status+=String(left)+" s";break;
+    case obd_trim::Stage::CollectHigh:
+      status="2500 rpm messen: "+String(left)+" s";break;
+    case obd_trim::Stage::Done:status="Messung abgeschlossen / Simulation beachten";break;
+    case obd_trim::Stage::Failed:status="ABBRUCH: zu wenige frische Trimwerte";break;
+  }
+  lv_label_set_text(trimStageText,status.c_str());
+  String report;
+  report.reserve(850);
+  if(stage==obd_trim::Stage::WaitIdle || stage==obd_trim::Stage::WaitHigh){
+    report=(stage==obd_trim::Stage::WaitIdle)
+       ? "Schritt 1/2: 20 s Leerlaufmessung nach 3 s stabilem Leerlauf.\n"
+       : "Schritt 2/2: Drehzahl MANUELL ca. 2500 rpm halten.\n"
+         "Nach 3 s Stabilisierung werden 15 s gemessen.\n";
+    report+="Fahrzeug muss stehen (Tempo <3 km/h), RPM/Tempo frisch.\n";
+    if(stage==obd_trim::Stage::WaitHigh)
+      report+="Leerlauf bereits gespeichert, Test nicht unterbrechen.\n";
+  } else if(stage==obd_trim::Stage::Failed){
+    report="Der Adapter lieferte auch nach max. 30 s Extra-Zeit\n"
+           "keine 3 FRISCHEN Werte pro Trim-PID.\n"
+           "Ergebnis nicht verfuegbar. Neu starten.";
+  } else if(stage==obd_trim::Stage::Idle){
+    report="Nur passive Mode-01-Messung.\n"
+           "Je Phase STFT/LTFT B1+B2, optional MAF/MAP.\n"
+           "20 s Leerlauf + 15 s bei ca. 2500 rpm.\n"
+           "Keine automatische Drossel- oder Motorregelung.";
+  } else {
+    const auto &idle=trimTest.idle();
+    const auto &high=trimTest.high();
+    auto appendPhase=[&](const obd_trim::Phase &phase,const char *name){
+      report+=name;
+      report+="\n";
+      for(unsigned bank=0;bank<2;++bank){
+        const unsigned offset=bank*2;
+        report+="B"+String(bank+1)+" STFT "+trimNumber(phase.mean(offset));
+        report+="% LTFT "+trimNumber(phase.mean(offset+1));
+        report+="% Gesamt "+trimNumber(phase.bankTotal(bank))+"%\n";
+      }
+      report+="MAF "+trimNumber(phase.mean(4),2)+" g/s, MAP ";
+      report+=trimNumber(phase.mean(5),0)+" kPa\n";
+      report+="Werte B1/B2: STFT "+String(phase.channels[0].count);
+      report+="/"+String(phase.channels[2].count)+"  LTFT ";
+      report+=String(phase.channels[1].count)+"/"+String(phase.channels[3].count)+"\n\n";
+    };
+    if(stage==obd_trim::Stage::CollectIdle || stage==obd_trim::Stage::Done)
+      appendPhase(idle,"LEERLAUF");
+    if(stage==obd_trim::Stage::CollectHigh || stage==obd_trim::Stage::Done)
+      appendPhase(high,"CA. 2500 RPM");
+    if(stage==obd_trim::Stage::Done){
+      report+="M272 DIAGNOSEHINWEISE (ORIENTIERUNG):\n";
+      bool hasHint=false;
+      if(trimTest.bankDifference()){report+="Bankdifferenz >=5%: bankspezifisch pruefen.\n";hasHint=true;}
+      if(trimTest.likelyVacuumPattern()){report+="Leerlauf-Plus sinkt bei 2500: Falschluft moeglich.\n";hasHint=true;}
+      if(trimTest.highPositiveBothPhases()){report+="Korrektur in beiden Phasen >10%: MAF/Kraftstoff pruefen.\n";hasHint=true;}
+      if(trimTest.negativeLarge()){report+="Gesamtkorrektur <-10%: Gemisch zu fett moeglich.\n";hasHint=true;}
+      if(!hasHint)report+="Keine eindeutige Abweichung >10% im Schema.\n";
+      report+="Nur Diagnosehilfe, kein Herstellertest.";
+    }
+  }
+  lv_label_set_text(trimReportText,report.c_str());
+}
 static void updateExtraData() {
   if (!extraDataText) return;
   String summary;
