@@ -63,7 +63,7 @@ müssen CI und `bash scripts/pi/build.sh lab` erfolgreich sein.
 | Erkennung unterstützter PIDs | **Portiert** für `0100/0120/0140` und mehrere ECU-Antworten | Headerlose, eindeutige Mode-01-Antworten |
 | KOEO/KOER | **Basisfunktion portiert** | Erkennung anhand RPM=0 bzw. RPM>0; kein alternativer Motorstatus |
 | Getaktetes Polling | **Portiert** | Nacheinander, keine gleichzeitigen TCP-Anfragen |
-| DTC 03,07,0A | **Teilweise portiert** | CAN/Legacy nur bei sicherem `ATDPN`-Format; komplexes ISO-TP weiter nur Rohdaten |
+| DTC 03,07,0A | **ELM ATH0-ISO-TP-Indexformat in Phase 3 portiert, ungetestet am Board** | Nur strikt vollständige `00A`/`0:`/`1:`-Nachrichten; ATH1/Raw-CAN und interleavte ECU-Ströme weiter nur Rohdaten |
 | M272-Codehinweise | **Auszug portiert** | Schlüsselcodes P0016–19, P0171/174, P030x, P200x, P0128, P0101 |
 | HU/AU-Check | **Vorprüfung portiert** | MIL, DTC-Zahl, Monitore, Laufstrecken, Warmläufe, Freeze-DTC und Code-Abfragen. Keine amtliche HU/AU-Aussage |
 | Readiness 0101 | **Portiert** | Mehrere gültige ECU-Antworten zusammengeführt |
@@ -214,6 +214,21 @@ Der Simulator besitzt keinerlei Verbindung zu einem Fahrzeug; seine
 Antworten dürfen nicht als reale Diagnosewerte interpretiert werden.
 
 
+
+## Phase 3: ISO-TP-DTC-Indexformat
+
+Der neue Parser `ObdIsoTp.h` setzt ausschließlich das vom ELM327
+mit `ATH0` ausgegebene Indexformat (Länge `00A`, Segmente `0:`, `1:`)
+zusammen. Er prüft Längen, Puffergrenzen und Segmentreihenfolge.
+Mehrere nacheinander empfangene DTC-Antwortblöcke werden aggregiert.
+Die DTC-Detailsicht zeigt bis zu 24 einzigartige Codes pro
+Leseart sowie generische Android-DTC-Beschreibungen. **Eine
+ECU-Adresszuordnung ist mit `ATH0` nicht möglich.**
+Der HU/AU-Vorcheck verwendet denselben Parser. Kein neuer
+Fahrzeugbefehl wurde freigeschaltet.
+
+Diese neue Funktion ist **noch nicht am Display oder Adapter geprüft**.
+[Pi-Simulatortest und Grenzen](ISO-TP-DTC-LAB-TEST.md).
 
 ## Phase 2: Geführter Fuel-Trim-Test
 
