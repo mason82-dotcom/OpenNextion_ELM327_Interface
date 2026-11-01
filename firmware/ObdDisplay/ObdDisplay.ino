@@ -316,9 +316,40 @@ static void onDtcDetails(lv_event_t *event) {
   if(lv_event_get_code(event)==LV_EVENT_CLICKED) showPage(8);
 }
 
+#if OBD_CONNECTED_BUILD
+static void cancelDtcScan() {
+  if (!dtcScanRequested) return;
+  dtcScanRequested = false;
+  ++diagGeneration;
+  dtcIndex = 0;
+  dtcScanCodes = 0;
+  dtcScanUndecodable = false;
+  dtcReport = "DTC abgebrochen: Teilergebnisse ungueltig. Neu lesen.";
+  lv_label_set_text(scanText, "Abgebrochen: neu lesen");
+  for (int i = 0; i < 3; ++i)
+    lv_label_set_text(dtcModeText[i], "DTC: -- (abgebrochen)");
+  if (dtcDetailText) {
+    lv_label_set_text(dtcDetailText, dtcReport.c_str());
+    lv_obj_scroll_to_y(lv_obj_get_parent(dtcDetailText), 0, LV_ANIM_OFF);
+  }
+  // Do not send an ELM interrupt or close a healthy stream. transact() drains
+  // the in-flight reply to its prompt; the generation guard discards it.
+  // A missing prompt still causes the existing timeout/disconnect path.
+}
+#endif
+
+static void onDtcCancel(lv_event_t *event) {
+  if (lv_event_get_code(event) != LV_EVENT_CLICKED) return;
+#if OBD_CONNECTED_BUILD
+  cancelDtcScan();
+#endif
+}
+
 static void onScanButton(lv_event_t *event) {
   if (lv_event_get_code(event) != LV_EVENT_CLICKED) return;
 #if OBD_CONNECTED_BUILD
+  // LVGL runs inside transact(): repeated clicks must not restart the scan.
+  if (dtcScanRequested) return;
   if (!adapterReady) {
     lv_label_set_text(scanText, "ELM327 nicht verbunden");
     return;
@@ -336,8 +367,11 @@ static void onScanButton(lv_event_t *event) {
   dtcReport="ECU-Lesedaten (noch nicht fahrzeugvalidiert)\n";
 #endif
   dtcReport+="ATH0: Antwortbloecke ohne ECU-Adressen\n\n";
-  if(dtcDetailText)lv_label_set_text(dtcDetailText,dtcReport.c_str());
-  lv_label_set_text(scanText, "DTC-Leseabfrage angefordert");
+  if(dtcDetailText) {
+    lv_label_set_text(dtcDetailText,dtcReport.c_str());
+    lv_obj_scroll_to_y(lv_obj_get_parent(dtcDetailText),0,LV_ANIM_OFF);
+  }
+  lv_label_set_text(scanText, "Lese DTC...");
   for (int i = 0; i < 3; ++i) lv_label_set_text(dtcModeText[i], "Wartet auf Antwort...");
 #endif
 }
@@ -375,6 +409,7 @@ static void onTrimStart(lv_event_t *event) {
   // No other on-demand scan may monopolize the PID poller while sampling.
   inspectionRequested=false;
   misfireRequested=false;
+  cancelDtcScan();
   dtcScanRequested=false;
   ++diagGeneration;
   trimPollIndex=0;
@@ -402,6 +437,7 @@ static void onInspectionButton(lv_event_t *event) {
   showPage(5);
 #if OBD_CONNECTED_BUILD
   if (!adapterReady) {lv_label_set_text(inspectionText,"Keine Verbindung");return;}
+  cancelDtcScan();
   cancelTrimForOtherDiagnostic();
 #if defined(OBD_LAB_BUILD)
   inspectionReport="HU/AU-Vorabcheck: SIMULIERTE OBD-Daten\n";
@@ -421,6 +457,7 @@ static void onMode06Button(lv_event_t *event) {
   showPage(6);
 #if OBD_CONNECTED_BUILD
   if (!adapterReady) {lv_label_set_text(misfireText,"Keine Verbindung");return;}
+  cancelDtcScan();
   cancelTrimForOtherDiagnostic();
 #if defined(OBD_LAB_BUILD)
   misfireReport="M272 Aussetzer / Mode 06 (LAB-SIMULATION)\n";
@@ -522,9 +559,9 @@ static void buildUi() {
 #else
       "DTC gesperrt",
 #endif
-      12, 238, 146, 42);
+      12, 238, 96, 42);
   lv_obj_add_event_cb(dtcButton, onScanButton, LV_EVENT_CLICKED, nullptr);
-  lv_obj_t *checkButton=makeButton(pages[2],"HU/AU",169,238,139,42);
+  lv_obj_t *checkButton=makeButton(pages[2],"HU/AU",112,238,96,42);
   lv_obj_add_event_cb(checkButton,onInspectionButton,LV_EVENT_CLICKED,nullptr);
 #if !OBD_CONNECTED_BUILD
   lv_obj_add_state(dtcButton, LV_STATE_DISABLED);
@@ -533,6 +570,11 @@ static void buildUi() {
   lv_obj_t *detailsButton=makeButton(pages[2],"DETAILS",166,284,142,39);
   lv_obj_add_event_cb(detailsButton,onDtcDetails,LV_EVENT_CLICKED,nullptr);
   label(pages[2], "ISO-TP: strikte, begrenzte Dekodierung", 12, 329, 290, 0xFFCC76);
+  lv_obj_t *dtcCancelButton=makeButton(pages[2],"ABBRUCH",212,238,96,42);
+  lv_obj_add_event_cb(dtcCancelButton,onDtcCancel,LV_EVENT_CLICKED,nullptr);
+#if !OBD_CONNECTED_BUILD
+  lv_obj_add_state(dtcCancelButton,LV_STATE_DISABLED);
+#endif
 
   // INFO: link diagnostics and local touch counter.
   label(pages[3], "SYSTEM / VERBINDUNG", 12, 3, 290, CYAN);
@@ -623,10 +665,13 @@ static void uiTick() {
 // Sole TCP transmit path. A raw string cannot reach the adapter.
 static bool transact(Command command, String &answer, uint32_t timeoutMs = CMD_TIMEOUT_MS) {
   const char *wire = obd_policy::wireCommand(command);
-  if (!adapter.connected() || wire == nullptr) return false;
+  if (!adapter.connected() || wire == nullptr || !obd_policy::allowedWire(command)) return false;
   adapter.print(wire);
   adapter.write('\r');
   ++txCount;
+  // Audit only static allowlisted commands: no credentials or raw responses.
+  Serial.printf("OBD_TX,%lu,%lu,%s\n", (unsigned long)millis(),
+                (unsigned long)txCount, wire);
   answer = "";
   uint32_t start = millis();
   while (millis() - start < timeoutMs) {
@@ -1289,3 +1334,4 @@ void loop() {
 #endif
   delay(5);
 }
+
