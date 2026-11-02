@@ -1,0 +1,12 @@
+# Local WiFi / dongle credentials, never commit
+firmware/ObdDisplay/Config.h
+**/.pio/
+build/
+.DS_Store
+*.elf
+*.bin
+firmware/ObdDisplay/LabConfig.h
+
+# Python test caches
+__pycache__/
+*.py[cod]
