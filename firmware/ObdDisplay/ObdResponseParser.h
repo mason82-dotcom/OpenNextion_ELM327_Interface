@@ -76,16 +76,37 @@ inline bool readPid(const char *response, std::uint8_t pid,
   return matched;
 }
 
-// Multiple ECU responses may report different supported-PID bitmaps.
-inline bool supportedPids00(const char *response, std::uint32_t &outMask) {
+// Combine 00/20/40 bitmap replies across ECUs, only at frame start.
+// Deliberately do not decode CAN headers or ISO-TP frames by guessing.
+inline bool supportedBitmap(const char *response, std::uint8_t base,
+                            std::uint32_t &outMask) {
   outMask = 0;
+  if (base != 0x00 && base != 0x20 && base != 0x40) return false;
   bool matched = false;
   forEachLineFrame(response, [&](const Frame &frame) {
     if (frame.size < 6 || frame.data[0] != 0x41 ||
-        frame.data[1] != 0x00) return;
+        frame.data[1] != base) return;
     std::uint32_t mask = 0;
     for (int i = 2; i < 6; ++i) mask = (mask << 8) | frame.data[i];
     outMask |= mask;
+    matched = true;
+  });
+  return matched;
+}
+inline bool supportedPids00(const char *response, std::uint32_t &outMask) {
+  return supportedBitmap(response, 0x00, outMask);
+}
+
+// Strict Mode 02, freeze frame 00. The frame number must match (no guessing).
+inline bool readFreezeFrame00(const char *response, std::uint8_t pid,
+                              std::uint8_t *out, std::size_t count) {
+  if (!out || count == 0 || count > 32) return false;
+  bool matched = false;
+  forEachLineFrame(response, [&](const Frame &frame) {
+    if (matched || frame.size < 3 + count ||
+        frame.data[0] != 0x42 || frame.data[1] != pid || frame.data[2] != 0x00)
+      return;
+    for (std::size_t i=0;i<count;++i) out[i] = frame.data[3+i];
     matched = true;
   });
   return matched;
