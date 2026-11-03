@@ -199,6 +199,22 @@ Steuerbytes zählen zur Grenze von 1024 Rohbytes pro Antwort.
   `-std=c++17 -Wall -Wextra -Werror` kompiliert und erfolgreich ausgeführt.
 - Lokale `Config.h` ist Git-ignoriert; kein Fahrzeugpasswort und keine
   erzeugten Firmware-Dateien werden veröffentlicht.
-- Die drei Firmware-Profile werden nach dem Abgleich mit `main` erneut gebaut.
-  Den laufenden GitHub-Nachweis enthält der Firmware-Build-Workflow am PR.
-  Bis zu dessen Abschluss wird kein erfolgreicher Build dieses Stands behauptet.
+
+Der [GitHub-Actions-Lauf 41729218370](https://github.com/mason82-dotcom/OpenNextion_ELM327_Interface/actions/runs/41729218370)
+für Codecommit `01fdcebea2bd792392e034cab3306d1211caaefc` hat beide Jobs
+`policy` und `firmware` erfolgreich abgeschlossen. Alle drei Profile wurden
+mit ESP32 Core 3.3.2 und den festgelegten Displaybibliotheken gebaut:
+
+| Profil | Programmspeicher | Statischer RAM | Ergebnis |
+|---|---:|---:|---|
+| Offline | 1.181.883 Byte (37 %) | 121.204 Byte (36 %) | BUILD OK |
+| Connected | 1.311.671 Byte (41 %) | 124.948 Byte (38 %) | BUILD OK |
+| LAB | 1.311.911 Byte (41 %) | 124.948 Byte (38 %) | BUILD OK |
+
+Diese Zahlen stammen aus dem Linux-CI-Build. Connected verwendet dabei die
+Platzhalter-Konfiguration aus `Config.h.example`, LAB eine separate
+Platzhalter-`LabConfig.h`; keine realen WLAN-Zugangsdaten liegen in CI vor.
+Die noch laufenden lokalen Doppelprüfungen wurden nach diesem vollständigen
+CI-Nachweis beendet und werden nicht als erfolgreiche lokale Builds gezählt.
+Der nachfolgende Dokumentationsnachtrag ändert keinen ausführbaren Code.
+Kein Board wurde geflasht und keine Fahrzeugverbindung hergestellt.
