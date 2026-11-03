@@ -1,8 +1,9 @@
 #pragma once
 // MicroSD CSV log format (v0.3). Pure C++17: no Arduino types, no heap, so
 // formatting, file naming and session numbering are tested on Linux.
-// There is no RTC time yet: rows carry millis() since boot; the session
-// number orders files across power cycles.
+// Rows carry millis() since boot and, once the RTC/NTP clock is valid, an
+// ISO-8601 UTC timestamp (empty otherwise); the session number orders files
+// across power cycles.
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -14,7 +15,7 @@ static constexpr std::uint32_t FLUSH_INTERVAL_MS = 1000;
 static constexpr std::uint16_t MAX_SESSION = 9999;
 static constexpr std::uint8_t MAX_PART = 99;
 static constexpr const char *DIRECTORY = "/obd";
-static constexpr const char *COLUMNS = "ms,pid,label,value,unit,latency_ms\n";
+static constexpr const char *COLUMNS = "ms,pid,label,value,unit,latency_ms,utc\n";
 
 // Returns the length written, or 0 if the buffer is too small (never a
 // truncated row: a half line would corrupt the CSV).
@@ -35,7 +36,7 @@ inline std::size_t header(char *out, std::size_t size, const char *source,
                           std::uint16_t session, std::uint8_t part) {
   if (!out || size == 0 || !csvSafe(source)) return 0;
   return finish(std::snprintf(out, size,
-      "# OpenNextion OBD log v1,source=%s,session=%u,part=%u,time=millis_since_boot\n%s",
+      "# OpenNextion OBD log v2,source=%s,session=%u,part=%u,time=millis_since_boot+utc\n%s",
       source, static_cast<unsigned>(session), static_cast<unsigned>(part),
       COLUMNS), size);
 }
@@ -43,32 +44,35 @@ inline std::size_t header(char *out, std::size_t size, const char *source,
 inline std::size_t pidRow(char *out, std::size_t size, std::uint32_t ms,
                           std::uint8_t pid, const char *label, double value,
                           std::uint8_t decimals, const char *unit,
-                          std::uint32_t latencyMs) {
+                          std::uint32_t latencyMs, const char *utc = "") {
   if (!out || size == 0 || !std::isfinite(value) || decimals > 6 ||
-      !csvSafe(label) || !csvSafe(unit)) return 0;
-  return finish(std::snprintf(out, size, "%lu,01%02X,%s,%.*f,%s,%lu\n",
+      !csvSafe(label) || !csvSafe(unit) || !csvSafe(utc)) return 0;
+  return finish(std::snprintf(out, size, "%lu,01%02X,%s,%.*f,%s,%lu,%s\n",
       static_cast<unsigned long>(ms), static_cast<unsigned>(pid), label,
       static_cast<int>(decimals), value, unit,
-      static_cast<unsigned long>(latencyMs)), size);
+      static_cast<unsigned long>(latencyMs), utc), size);
 }
 
 // Mode 06 monitor result, same columns as a PID row: "06A2" in the pid
 // column, label names cylinder and counter ("Zyl1 EWMA"), raw counts.
 inline std::size_t mode06Row(char *out, std::size_t size, std::uint32_t ms,
                              std::uint8_t mid, const char *label,
-                             std::uint16_t value, std::uint32_t latencyMs) {
-  if (!out || size == 0 || !csvSafe(label)) return 0;
-  return finish(std::snprintf(out, size, "%lu,06%02X,%s,%u,count,%lu\n",
+                             std::uint16_t value, std::uint32_t latencyMs,
+                             const char *utc = "") {
+  if (!out || size == 0 || !csvSafe(label) || !csvSafe(utc)) return 0;
+  return finish(std::snprintf(out, size, "%lu,06%02X,%s,%u,count,%lu,%s\n",
       static_cast<unsigned long>(ms), static_cast<unsigned>(mid), label,
-      static_cast<unsigned>(value), static_cast<unsigned long>(latencyMs)), size);
+      static_cast<unsigned>(value), static_cast<unsigned long>(latencyMs), utc), size);
 }
 
 // mode: "03", "07" or "0A"; code: decoded DTC such as "P0171".
 inline std::size_t dtcRow(char *out, std::size_t size, std::uint32_t ms,
-                          const char *mode, const char *code) {
-  if (!out || size == 0 || !csvSafe(mode) || !csvSafe(code)) return 0;
-  return finish(std::snprintf(out, size, "%lu,%s,DTC,%s,,\n",
-      static_cast<unsigned long>(ms), mode, code), size);
+                          const char *mode, const char *code,
+                          const char *utc = "") {
+  if (!out || size == 0 || !csvSafe(mode) || !csvSafe(code) || !csvSafe(utc))
+    return 0;
+  return finish(std::snprintf(out, size, "%lu,%s,DTC,%s,,,%s\n",
+      static_cast<unsigned long>(ms), mode, code, utc), size);
 }
 
 // Event rows start with '#' so CSV tools can skip them as comments.

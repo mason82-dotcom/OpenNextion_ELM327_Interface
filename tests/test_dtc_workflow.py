@@ -100,7 +100,8 @@ struct AdapterDouble {
 } adapter;
 void cancelTrimForOtherDiagnostic(){}
 void sdEvent(const char *){}
-namespace obd_log {size_t dtcRow(char *,size_t,uint32_t,const char *,const char *){return 0;}}
+namespace obd_log {size_t dtcRow(char *,size_t,uint32_t,const char *,const char *,const char * =""){return 0;}}
+void clockIso(char *out,size_t){out[0]='\0';}  // RTC not set in host doubles
 void sdWrite(char *,size_t){}
 // The real disconnect UI is covered by test_session_invalidation.py.
 // Here we check that the scan invokes it on transport failure.

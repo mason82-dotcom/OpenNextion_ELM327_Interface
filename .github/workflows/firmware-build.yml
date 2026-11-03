@@ -35,6 +35,8 @@ jobs:
           /tmp/obd-sd-log-test
           g++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/ObdDisplay tests/test_vehicle_profile.cpp -o /tmp/obd-vehicle-profile-test
           /tmp/obd-vehicle-profile-test
+          g++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/ObdDisplay tests/test_rtc8563.cpp -o /tmp/obd-rtc-test
+          /tmp/obd-rtc-test
           python3 -m unittest discover -s tests -p 'test_*.py' -v
 
   firmware:

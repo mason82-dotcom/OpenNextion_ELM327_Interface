@@ -20,6 +20,8 @@
 #include "FuelTrimTest.h"
 #include "SdLogFormat.h"
 #include "VehicleProfile.h"
+#include "Rtc8563.h"
+#include <sys/time.h>
 
 #if defined(OBD_LAB_BUILD)
 #if __has_include("Config.h")
@@ -42,6 +44,9 @@
 
 #if OBD_CONNECTED_BUILD
 #include <SD_MMC.h>
+#endif
+#if defined(OBD_LAB_BUILD)
+#include <esp_sntp.h>
 #endif
 
 using obd_policy::Command;
@@ -76,7 +81,13 @@ static lv_obj_t *pages[9], *navButtons[4], *linkText, *statsText;
 static lv_obj_t *extraDataText, *engineStateText, *inspectionText, *misfireText;
 static lv_obj_t *trimStageText, *trimReportText;
 static lv_obj_t *dtcModeText[3], *dtcDetailText;
-static lv_obj_t *sdText;
+static lv_obj_t *sdText, *clockText;
+
+// Wall clock: BLX8563 RTC (UTC) at boot; the LAB build may also set it via
+// NTP on the lab WLAN. The vehicle profile only reads the RTC.
+enum class ClockSource : uint8_t { None, Rtc, Ntp };
+static ClockSource clockSource = ClockSource::None;
+static bool rtcPresent = false;
 static uint32_t tapCount = 0;
 
 #if OBD_CONNECTED_BUILD
@@ -148,6 +159,15 @@ static bool sdOpenPart() {
   sdTotalBytes += n;
   sdLastFlush = millis();
   Serial.printf("SD: logging to %s\n", name);
+  char utc[32], event[64];
+  clockIso(utc, sizeof utc);
+  snprintf(event, sizeof event, "clock %s", utc[0] ? utc : "not set");
+  char row[96];
+  const size_t len = obd_log::eventRow(row, sizeof row, millis(), event);
+  if (len && sdFile.write((const uint8_t *)row, len) == len) {
+    sdBytes += len;
+    sdTotalBytes += len;
+  }
   return true;
 }
 
@@ -219,6 +239,77 @@ static void resetPanel() {
   delay(120);
   expander.digitalWriteByte(0xFF);
   delay(120);
+}
+
+static void i2cScan() {
+  Serial.print("I2C:");
+  for (uint8_t address = 1; address < 127; ++address) {
+    Wire.beginTransmission(address);
+    if (Wire.endTransmission() == 0) Serial.printf(" 0x%02X", address);
+  }
+  Serial.println();
+}
+
+static bool rtcRead(rtc8563::DateTime &time) {
+  Wire.beginTransmission(rtc8563::I2C_ADDRESS);
+  Wire.write(rtc8563::REG_SECONDS);
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom(rtc8563::I2C_ADDRESS, (uint8_t)7) != 7) return false;
+  uint8_t regs[7];
+  for (auto &value : regs) value = Wire.read();
+  return rtc8563::decode(regs, time);
+}
+
+static bool rtcWrite(int64_t epoch) {
+  uint8_t regs[7];
+  if (!rtc8563::encode(rtc8563::fromEpoch(epoch), regs)) return false;
+  Wire.beginTransmission(rtc8563::I2C_ADDRESS);
+  Wire.write(rtc8563::REG_SECONDS);
+  Wire.write(regs, sizeof regs);
+  return Wire.endTransmission() == 0;
+}
+
+// ISO-8601 UTC with milliseconds, or "" while the clock is not set.
+static void clockIso(char *out, size_t size) {
+  out[0] = '\0';
+  if (clockSource == ClockSource::None) return;
+  timeval now;
+  gettimeofday(&now, nullptr);
+  if (now.tv_sec < rtc8563::MIN_VALID_EPOCH) return;
+  rtc8563::isoUtc(out, size, now.tv_sec, (unsigned)(now.tv_usec / 1000));
+}
+
+static void clockFromRtc() {
+  Wire.beginTransmission(rtc8563::I2C_ADDRESS);
+  rtcPresent = Wire.endTransmission() == 0;
+  rtc8563::DateTime time;
+  if (rtcPresent && rtcRead(time) &&
+      rtc8563::toEpoch(time) >= rtc8563::MIN_VALID_EPOCH) {
+    timeval now{(time_t)rtc8563::toEpoch(time), 0};
+    settimeofday(&now, nullptr);
+    clockSource = ClockSource::Rtc;
+    char iso[32];
+    clockIso(iso, sizeof iso);
+    Serial.printf("RTC: %s\n", iso);
+  } else {
+    Serial.println(rtcPresent ? "RTC: found, time not set (VL or invalid)"
+                              : "RTC: not found at 0x51");
+  }
+}
+
+static void updateClockText() {
+  if (!clockText) return;
+  if (clockSource == ClockSource::None) {
+    lv_label_set_text(clockText, rtcPresent ? "Uhr: nicht gestellt"
+                                            : "Uhr: kein RTC gefunden");
+    return;
+  }
+  char iso[32];
+  clockIso(iso, sizeof iso);
+  iso[16] = '\0';  // "2026-10-11T10:52"
+  iso[10] = ' ';
+  lv_label_set_text_fmt(clockText, "Uhr: %s UTC (%s)", iso,
+      clockSource == ClockSource::Ntp ? "NTP" : "RTC");
 }
 
 static void displayFlush(lv_disp_drv_t *driver, const lv_area_t *area, lv_color_t *pixels) {
@@ -589,6 +680,7 @@ static void buildUi() {
   lv_obj_t *touchBtn = makeButton(pages[3], "Touch testen", 12, 230, 146, 43);
   lv_obj_add_event_cb(touchBtn, onTouchButton, LV_EVENT_CLICKED, nullptr);
   touchText = label(pages[3], "Touch: 0", 175, 243, 132, LIGHT);
+  clockText = label(pages[3], "Uhr: --", 12, 280, 296, MUTED);
   label(pages[3], "Keine Schreib-, Stellglied- oder Loeschfunktion", 12, 307, 290, MUTED);
 
   // Additional pages reached via large buttons, keeping existing four tabs.
@@ -1067,9 +1159,10 @@ static void pollOnePid() {
   Serial.printf("CSV,%lu,01%02X,%s,%.*f,%s,%lu\n",
       (unsigned long)sampledAt,p.pid,p.title,p.decimals,value,p.unit,
       (unsigned long)latency);
-  char row[112];
+  char row[144], utc[32];
+  clockIso(utc, sizeof utc);
   sdWrite(row, obd_log::pidRow(row, sizeof row, sampledAt, p.pid, p.title,
-                               value, p.decimals, p.unit, latency));
+                               value, p.decimals, p.unit, latency, utc));
   if (millis()-lastExtraRefresh >= 500) {
     updateExtraData(); lastExtraRefresh=millis();
   }
@@ -1135,9 +1228,10 @@ static void scanOneDtcMode() {
     static const char *modeIds[] = {"03","07","0A"};
     for (std::size_t i=0;i<dtcs.count;++i) {
       Serial.printf("DTC,%s,%s\n",names[dtcIndex],dtcs.entries[i].code);
-      char row[48];
+      char row[80], utc[32];
+      clockIso(utc, sizeof utc);
       sdWrite(row, obd_log::dtcRow(row, sizeof row, millis(),
-                                   modeIds[dtcIndex], dtcs.entries[i].code));
+                                   modeIds[dtcIndex], dtcs.entries[i].code, utc));
     }
   }
   ++dtcIndex;
@@ -1281,12 +1375,13 @@ static void scanMisfireStep() {
         {m.hasEwma,"EWMA",m.ewma},{m.hasCurrent,"Zyklus",m.current}};
     for(const auto &r:rows){
       if(!r.ok)continue;
-      char label[24],row[96];
+      char label[24],row[128],utc[32];
       snprintf(label,sizeof label,"Zyl%u %s",(unsigned)cyl,r.kind);
+      clockIso(utc,sizeof utc);
       Serial.printf("CSV,%lu,06%02X,%s,%u,count,%lu\n",(unsigned long)sampledAt,
                     (unsigned)mid,label,(unsigned)r.value,(unsigned long)latency);
       sdWrite(row,obd_log::mode06Row(row,sizeof row,sampledAt,mid,label,
-                                     r.value,latency));
+                                     r.value,latency,utc));
     }
   } else {
     misfireReport+="nicht verfuegbar (UASID24)";
@@ -1310,6 +1405,8 @@ void setup() {
   Serial.begin(115200);
   Wire.begin(NEXTION_IIC_SDA_PIN, NEXTION_IIC_SCL_PIN, 400000);
   resetPanel();
+  i2cScan();
+  clockFromRtc();
   gfx->begin(LCD_SPI_HZ);
   gfx->setRotation(0);
   gfx->fillScreen(RGB565_BLACK);
@@ -1330,6 +1427,7 @@ void setup() {
   indev.read_cb = touchRead;
   lv_indev_drv_register(&indev);
   buildUi();
+  updateClockText();
 #if OBD_CONNECTED_BUILD
   sdBegin();
   WiFi.mode(WIFI_STA);
@@ -1356,8 +1454,41 @@ void setup() {
 #endif
 }
 
+#if defined(OBD_LAB_BUILD)
+// LAB only: the lab WLAN has internet; the vehicle dongle AP does not, and
+// the vehicle profile must not talk to anything but the adapter.
+static void labNtpTick() {
+  static bool started = false;
+  if (!started) {
+    if (WiFi.status() != WL_CONNECTED) return;
+    configTime(0, 0, "pool.ntp.org", "time.cloudflare.com");
+    started = true;
+    return;
+  }
+  if (clockSource == ClockSource::Ntp ||
+      sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED ||
+      time(nullptr) < rtc8563::MIN_VALID_EPOCH) return;
+  clockSource = ClockSource::Ntp;
+  const bool stored = rtcPresent && rtcWrite(time(nullptr));
+  char utc[32], event[80];
+  clockIso(utc, sizeof utc);
+  snprintf(event, sizeof event, "clock set by NTP %s rtc=%s", utc,
+           stored ? "written" : "not written");
+  Serial.printf("CLOCK: %s\n", event);
+  sdEvent(event);
+}
+#endif
+
 void loop() {
   uiTick();
+  static uint32_t lastClockUi = 0;
+  if (millis() - lastClockUi >= 1000) {
+    lastClockUi = millis();
+#if defined(OBD_LAB_BUILD)
+    labNtpTick();
+#endif
+    updateClockText();
+  }
 #if OBD_CONNECTED_BUILD
   uint32_t now = millis();
   if (!adapterReady && (now - lastAttempt >= WIFI_RETRY_MS || lastAttempt == 0)) {
