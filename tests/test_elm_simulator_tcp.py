@@ -93,6 +93,9 @@ class SimulatorTcpTest(unittest.TestCase):
                          "00A\r0:43 04 01 71 03 01 03\r>")
         self.fixture.write_text("BAD_SEQUENCE\n", encoding="ascii")
         self.assertIn("2:02 03 03", exchange(self.sock, "03"))
+        self.fixture.write_text("PADDED\n", encoding="ascii")
+        self.assertEqual(exchange(self.sock, "03"),
+                         "00A\r0:43 04 01 71 03 01\r1:03 02 03 03 00 00 00\r>")
         self.fixture.unlink()
         self.assertEqual(exchange(self.sock, "03"), "43 00\r>")
         self.assertEqual(exchange(self.sock, "07"), "47 00\r>")

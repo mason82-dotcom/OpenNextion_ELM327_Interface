@@ -102,6 +102,9 @@ printf 'TRUNCATED\n' > /tmp/elm327-lab-dtc
 # fehlender Folgeblock: unvollstaendig, nur Rohdaten
 printf 'BAD_SEQUENCE\n' > /tmp/elm327-lab-dtc
 # falscher Segmentindex: unvollstaendig, nur Rohdaten
+printf 'PADDED\n' > /tmp/elm327-lab-dtc
+# echtes Adapterformat: First Frame 6 Bytes, letzter Frame mit 3 Fuellbytes
+# (00 00 00); muss wie MULTI vier Codes liefern, NICHT "RAW"
 rm -f /tmp/elm327-lab-dtc
 # Rueckkehr zu leeren Standard-Simulator-DTCs
 ```
@@ -110,6 +113,15 @@ Nach jeder Umschaltung **manuell `DTC lesen`** drücken. Die Firmware
 sendet keine DTC-Abfragen allein durch einen Seitenwechsel.
 Weder Simulator noch Firmware senden `04`, Codierungs- oder
 Stellgliedkommandos.
+
+## Padding echter Adapter (ab 2026-11-03)
+
+Ein echter ELM327 gibt den letzten Consecutive Frame **ungekürzt** aus
+(ISO-15765-2-Padding, siehe AndrOBD Issue #78). `MULTI` bildet das nicht
+ab (7 Bytes im First Frame, kein Padding); `PADDED` zeigt die reale Form.
+Die Firmware akzeptiert Füllbytes nur auf einem vollen 7-Byte-Folgeframe,
+der die Nachricht abschließt. Vor PR #6 wäre `PADDED` als
+`NICHT SICHER DEKODIERBAR` erschienen.
 
 ## Prüfstatus
 
@@ -122,6 +134,7 @@ Protokoll per `ATDPN` als CAN erkannt; Fotos der DTC-/DETAILS-Seite):
 | `TWO` | 03: `P0174 (+4)`, Status `5 Codes -> DETAILS` | 5 Codes aus 2 Antwortblöcken | bestanden |
 | `TRUNCATED` | 03: `RAW …`, Status `RAW -> DETAILS` | `NICHT SICHER DEKODIERBAR` + Rohantwort | bestanden, keine Teilcodes |
 | `BAD_SEQUENCE` | 03: `RAW …`, Status `RAW -> DETAILS` | `NICHT SICHER DEKODIERBAR` + Rohantwort | bestanden, keine Teilcodes |
+| `PADDED` (ab 2026-11-03) | erwartet 03: `P0171 (+3)`, Status `4 Codes -> DETAILS` | P0171, P0301–P0303, 1 Antwortblock | **noch nicht am Board geprüft** |
 
 Dabei gefunden und behoben: Die Statuszeile meldete `Keine DTCs`,
 obwohl 03 Codes enthielt (letzter Modus 0A leer), und die
