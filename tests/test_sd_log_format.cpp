@@ -29,6 +29,13 @@ int main() {
   for (const auto &item : obd_pids::catalog)
     assert(csvSafe(item.title) && csvSafe(item.unit));
 
+  // Mode 06 rows share the PID columns: pid=06MM, unit=count.
+  assert(mode06Row(buf, sizeof buf, 493206, 0xA2, "Zyl1 EWMA", 4, 76));
+  assert(std::strcmp(buf, "493206,06A2,Zyl1 EWMA,4,count,76\n") == 0);
+  mode06Row(buf, sizeof buf, 9, 0xA7, "Zyl6 Zyklus", 65535, 80);
+  assert(std::strcmp(buf, "9,06A7,Zyl6 Zyklus,65535,count,80\n") == 0);
+  assert(mode06Row(buf, sizeof buf, 1, 0xA2, "bad,label", 1, 1) == 0);
+  assert(mode06Row(buf, 12, 493206, 0xA2, "Zyl1 EWMA", 4, 76) == 0);
   assert(dtcRow(buf, sizeof buf, 99, "03", "P0171"));
   assert(std::strcmp(buf, "99,03,DTC,P0171,,\n") == 0);
   assert(eventRow(buf, sizeof buf, 5, "adapter connected CAN=1"));
