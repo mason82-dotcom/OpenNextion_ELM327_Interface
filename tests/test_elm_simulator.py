@@ -74,6 +74,8 @@ class LabTest(unittest.TestCase):
         self.assertIn("004\r0:43 01 01 74",
                       lab.answer_for("03", dtc_fixture="TWO"))
         self.assertEqual(lab.answer_for("07", dtc_fixture="MULTI"), "47 00")
+        self.assertEqual(lab.answer_for("03", dtc_fixture="PADDED"),
+                         "00A\r0:43 04 01 71 03 01\r1:03 02 03 03 00 00 00")
         self.assertEqual(lab.answer_for("04", dtc_fixture="MULTI"), "?")
         self.assertEqual(lab.answer_for("03", dtc_fixture="UNKNOWN"), "43 00")
 
@@ -81,7 +83,7 @@ class LabTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             filename = pathlib.Path(tmp) / "dtc_fixture"
             self.assertIsNone(lab.dtc_fixture_from_file(str(filename)))
-            for value in ("MULTI", "TWO", "TRUNCATED", "BAD_SEQUENCE"):
+            for value in ("MULTI", "TWO", "TRUNCATED", "BAD_SEQUENCE", "PADDED"):
                 filename.write_text(value, encoding="ascii")
                 self.assertEqual(lab.dtc_fixture_from_file(str(filename)), value)
             filename.write_text("ATSH7E0", encoding="ascii")

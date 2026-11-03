@@ -69,6 +69,13 @@ DTC_FIXTURES = {
         "03": "00A\r0:43 04 01 71 03 01 03\r2:02 03 03",
         "07": "47 00", "0A": "4A 00",
     },
+    # Real ELM327 shape: first frame carries 6 bytes, the last consecutive
+    # frame is printed untrimmed with ISO 15765-2 padding (here 3x 00).
+    # 10 payload bytes = P0171, P0301, P0302, P0303.
+    "PADDED": {
+        "03": "00A\r0:43 04 01 71 03 01\r1:03 02 03 03 00 00 00",
+        "07": "47 00", "0A": "4A 00",
+    },
 }
 
 # Fixed local transport scenarios, never arbitrary responses or destinations.
@@ -312,7 +319,7 @@ def main():
     parser.add_argument("--rpm-file", default=None,
                         help="optional local file with simulated RPM from 0..7000 (no vehicle access)")
     parser.add_argument("--dtc-file", default=None,
-                        help="optional local DTC fixture selector: MULTI, TWO, TRUNCATED, BAD_SEQUENCE")
+                        help="optional local DTC fixture selector: MULTI, TWO, TRUNCATED, BAD_SEQUENCE, PADDED")
     parser.add_argument("--dtc-transport-file", default=None,
                         help="optional persistent LAB selector: DELAY_03, NO_PROMPT_07, "
                              "DISCONNECT_0A (each action supports 03/07/0A)")
