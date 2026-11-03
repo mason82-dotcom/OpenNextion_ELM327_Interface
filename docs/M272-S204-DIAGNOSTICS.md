@@ -184,3 +184,21 @@ falsche Frame-Nummern, abgeschnittene ISO-TP-Nachrichten und Transportfehler.
 
 Ein erfolgreicher Host-/Simulator-/Buildtest bestätigt weder die tatsächlich
 angebotenen Mercedes-Messwerte noch die Bedienreaktion auf dem realen Display.
+
+## Validierung des zusammengeführten Stands
+
+Am 2026-11-03 wurde der inzwischen auf `main` integrierte inkrementelle
+DTC-Empfang (`b982245`) übernommen und mit der typisierten ELMo-Sitzung
+verbunden. Die Firmware nutzt für alle Anfragen denselben festen Puffer;
+der DTC-Pfad kehrt weiterhin zur Hauptschleife zurück. Auch verworfene
+Steuerbytes zählen zur Grenze von 1024 Rohbytes pro Antwort.
+
+- 88 Python-Unittests lokal bestanden, einschließlich tatsächlicher
+  ELMo-Implementierung und zusammengeführter Diagnose-Handler mit Host-Doubles.
+- Alle elf nativen C++-Testprogramme mit
+  `-std=c++17 -Wall -Wextra -Werror` kompiliert und erfolgreich ausgeführt.
+- Lokale `Config.h` ist Git-ignoriert; kein Fahrzeugpasswort und keine
+  erzeugten Firmware-Dateien werden veröffentlicht.
+- Die drei Firmware-Profile werden nach dem Abgleich mit `main` erneut gebaut.
+  Den laufenden GitHub-Nachweis enthält der Firmware-Build-Workflow am PR.
+  Bis zu dessen Abschluss wird kein erfolgreicher Build dieses Stands behauptet.
