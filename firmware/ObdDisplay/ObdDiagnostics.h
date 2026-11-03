@@ -115,19 +115,26 @@ struct Misfire {
   std::uint16_t ewma=0,current=0;
 };
 // Mode 06 only: MID A2-A7, TID 0B/0C, UASID 24=raw counts.
-// Reject ISO-TP fragments; no interpretation for other scaling IDs.
+// Works on one complete, headerless response message (single line or an
+// ISO-TP message reassembled by obd_isotp::parseMisfire). No other scaling IDs.
+inline void accumulateMisfire(const std::uint8_t *data, std::size_t size,
+                              std::uint8_t mid, Misfire &out) {
+  if (!data || size<10 || data[0]!=0x46 || (size-1)%9!=0) return;
+  for(std::size_t i=1;i+8<size;i+=9){
+    if(data[i]!=mid || data[i+2]!=0x24)continue;
+    std::uint16_t value=(std::uint16_t(data[i+3])<<8)|data[i+4];
+    if(data[i+1]==0x0B){out.ewma=value;out.hasEwma=true;}
+    if(data[i+1]==0x0C){out.current=value;out.hasCurrent=true;}
+  }
+}
+// Single-line variant. NOTE: on CAN a Mode 06 reply is >= 10 bytes and thus
+// always ISO-TP multiframe; real adapters need obd_isotp::parseMisfire.
 inline bool parseMisfire(const char *response,std::uint8_t cylinder,Misfire &out){
   out={};
   if (cylinder < 1 || cylinder > 6) return false;
   const std::uint8_t mid=std::uint8_t(0xA1+cylinder);
   obd_response::forEachLineFrame(response,[&](const obd_response::Frame &f){
-    if(f.size<10 || f.data[0]!=0x46 || (f.size-1)%9!=0) return;
-    for(std::size_t i=1;i+8<f.size;i+=9){
-      if(f.data[i]!=mid || f.data[i+2]!=0x24)continue;
-      std::uint16_t value=(std::uint16_t(f.data[i+3])<<8)|f.data[i+4];
-      if(f.data[i+1]==0x0B){out.ewma=value;out.hasEwma=true;}
-      if(f.data[i+1]==0x0C){out.current=value;out.hasCurrent=true;}
-    }
+    accumulateMisfire(f.data,f.size,mid,out);
   });
   return out.hasEwma||out.hasCurrent;
 }

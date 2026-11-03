@@ -30,6 +30,7 @@ Keine Verantwortung für abweichendes Verhalten fehlerhafter ELM327-Klone oder n
 - Arduino ESP32 Core **3.3.2**; Bibliotheken **lvgl 8.3.11**, GFX Library for Arduino, Adafruit CST8XX Library, Adafruit PCF8574.
 - Arduino-CLI FQBN: `esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=app3M_fat9M_16MB`
 - Quellcode: `firmware/ObdDisplay/ObdDisplay.ino`.
+- Fahrzeugprofil: `firmware/ObdDisplay/VehicleProfile.h`, aktiv **MB C350 W204 M272 (2008)** (6 Zyl., 2 Baenke, erwartet CAN, wird nur geprueft, nie erzwungen). Generisch: `-DOBD_VEHICLE_GENERIC`. Review: [REVIEW-2026-11-03](docs/REVIEW-2026-11-03.md).
 - Standardadresse des zuvor verwendeten ELM327-WLAN-Dongles: `192.168.0.10:35000`. WLAN-SSID und tatsächliche Adapteradresse können abweichen.
 
 ### Auf Raspberry Pi 5 bauen (ohne Flashen)

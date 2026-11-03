@@ -22,7 +22,9 @@ class LabTest(unittest.TestCase):
         self.assertEqual(lab.answer_for("03"), "43 00")
         self.assertEqual(lab.answer_for("07"), "47 00")
         self.assertEqual(lab.answer_for("0A"), "4A 00")
-        self.assertEqual(lab.answer_for("06A2"), "46 A2 0B 24 00 00 00 00 00 10")
+        self.assertEqual(lab.answer_for("06A2"),
+                         "013\r0:46 A2 0B 24 00 00\r1:00 00 00 10 A2 0C 24\r"
+                         "2:00 00 00 00 00 10 00")
     def test_reject_modifying_requests(self):
         for cmd in ("04", "08", "14", "2E", "31", "2701", "ATSH7E0", "ATCRA7E8", "FF", ""):
             with self.subTest(cmd=cmd):
