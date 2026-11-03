@@ -90,5 +90,20 @@ class LabTest(unittest.TestCase):
     def test_adapter_setup(self):
         self.assertEqual(lab.answer_for("ATSP0"), "OK")
         self.assertEqual(lab.answer_for("ATZ"), "ELM327 LAB SIM v0.1")
+
+    def test_transport_selector_is_bounded_and_dtc_only(self):
+        self.assertIsNone(lab.dtc_transport_from_file(None, "03"))
+        with tempfile.TemporaryDirectory() as tmp:
+            filename = pathlib.Path(tmp) / "transport"
+            self.assertIsNone(lab.dtc_transport_from_file(str(filename), "03"))
+            for selector, (action, mode) in lab.DTC_TRANSPORT_FIXTURES.items():
+                filename.write_text(selector + "\n", encoding="ascii")
+                self.assertEqual(lab.dtc_transport_from_file(str(filename), mode), action)
+                for other in {"03", "07", "0A", "010C", "0105", "010D", "ATZ", "04"} - {mode}:
+                    self.assertIsNone(lab.dtc_transport_from_file(str(filename), other))
+            for bad in (b"NO_PROMPT_04", b"DELAY_03\rATSH7E0", b"\xff", b"X" * 65):
+                filename.write_bytes(bad)
+                self.assertIsNone(lab.dtc_transport_from_file(str(filename), "03"))
 if __name__ == "__main__":
     unittest.main()
+

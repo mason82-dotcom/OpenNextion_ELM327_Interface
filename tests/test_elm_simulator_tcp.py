@@ -31,6 +31,16 @@ def exchange(sock: socket.socket, command: str) -> str:
     return received.decode("ascii")
 
 
+def receive_body(sock: socket.socket) -> bytes:
+    received = bytearray()
+    while b"\r" not in received:
+        packet = sock.recv(64)
+        if not packet or len(received) + len(packet) > 2048:
+            raise AssertionError("Missing or oversized simulator response body")
+        received.extend(packet)
+    return bytes(received)
+
+
 class SimulatorTcpTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -38,10 +48,12 @@ class SimulatorTcpTest(unittest.TestCase):
         cls.fixture = Path(cls.tmp.name) / "dtc.txt"
         cls.rpm = Path(cls.tmp.name) / "rpm.txt"
         cls.fault = Path(cls.tmp.name) / "fault.txt"
+        cls.transport = Path(cls.tmp.name) / "dtc-transport.txt"
         cls.server = lab.Server(("127.0.0.1", 0), lab.ElmCrHandler)
         cls.server.dtc_file = str(cls.fixture)
         cls.server.rpm_file = str(cls.rpm)
         cls.server.fault_file = str(cls.fault)
+        cls.server.dtc_transport_file = str(cls.transport)
         cls.server.search_delay = 0.0
         cls.server.reply_delay = 0.0
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
@@ -56,7 +68,7 @@ class SimulatorTcpTest(unittest.TestCase):
         cls.tmp.cleanup()
 
     def setUp(self):
-        for path in (self.fixture, self.rpm, self.fault):
+        for path in (self.fixture, self.rpm, self.fault, self.transport):
             path.unlink(missing_ok=True)
         self.sock = socket.create_connection(self.address, timeout=3)
         self.sock.settimeout(3)
@@ -158,6 +170,70 @@ class SimulatorTcpTest(unittest.TestCase):
         self.assertEqual(exchange(self.sock, "ATSH7E0"), "?\r>")
         self.assertEqual(exchange(self.sock, "010C"), "41 0C 27 10\r>")
 
+    def test_dtc_prompt_delay_allows_partial_results_and_hot_removal(self):
+        exchange(self.sock, "0100")
+        self.fixture.write_text("MULTI\n", encoding="ascii")
+        self.transport.write_text("DELAY_07\n", encoding="ascii")
+        self.assertIn("00A", exchange(self.sock, "03"))
+        for command in ("010C", "0105", "010D", "ATDPN"):
+            self.assertIn(">", exchange(self.sock, command))
+        started = time.monotonic()
+        self.sock.sendall(b"07\r")
+        self.assertEqual(receive_body(self.sock), b"47 00\r")
+        self.sock.settimeout(0.1)
+        with self.assertRaises(socket.timeout):
+            self.sock.recv(64)
+        self.sock.settimeout(3)
+        self.assertEqual(self.sock.recv(64), b">")
+        self.assertGreaterEqual(time.monotonic() - started, lab.DTC_PROMPT_DELAY_SECONDS)
+        self.transport.unlink()
+        self.assertEqual(exchange(self.sock, "07"), "47 00\r>")
+
+    def test_withheld_prompt_requires_new_session_then_manual_retry(self):
+        exchange(self.sock, "0100")
+        self.transport.write_text("NO_PROMPT_07\n", encoding="ascii")
+        self.assertEqual(exchange(self.sock, "03"), "43 00\r>")
+        self.sock.sendall(b"07\r")
+        self.assertEqual(receive_body(self.sock), b"47 00\r")
+        self.sock.settimeout(0.1)
+        with self.assertRaises(socket.timeout):
+            self.sock.recv(64)
+        self.sock.settimeout(3)
+        # Removal cannot resynchronise a session with an unfulfilled prompt.
+        self.transport.unlink()
+        self.sock.sendall(b"010C\r")
+        self.assertEqual(self.sock.recv(64), b"")
+        self.sock.close()
+        self.sock = socket.create_connection(self.address, timeout=3)
+        self.assertIn("ELM327 LAB SIM", exchange(self.sock, "ATZ"))
+        exchange(self.sock, "ATE0")
+        exchange(self.sock, "0100")
+        self.assertEqual(exchange(self.sock, "07"), "47 00\r>")
+        self.assertEqual(exchange(self.sock, "010C"), "41 0C 13 48\r>")
+
+    def test_disconnect_fixture_targets_only_selected_dtc_mode(self):
+        exchange(self.sock, "0100")
+        self.transport.write_text("DISCONNECT_0A\n", encoding="ascii")
+        self.assertEqual(exchange(self.sock, "03"), "43 00\r>")
+        self.assertEqual(exchange(self.sock, "07"), "47 00\r>")
+        self.assertEqual(exchange(self.sock, "0105"), "41 05 82\r>")
+        self.sock.sendall(b"0A\r")
+        self.assertEqual(self.sock.recv(64), b"")
+
+    def test_unknown_transport_selector_does_not_change_replies(self):
+        exchange(self.sock, "0100")
+        self.transport.write_text("NO_PROMPT_010C\n", encoding="ascii")
+        self.assertEqual(exchange(self.sock, "010C"), "41 0C 13 48\r>")
+        self.assertEqual(exchange(self.sock, "03"), "43 00\r>")
+
+    def test_withheld_prompt_rejects_pipelined_requests(self):
+        exchange(self.sock, "0100")
+        self.transport.write_text("NO_PROMPT_07\n", encoding="ascii")
+        self.sock.sendall(b"07\r010C\r")
+        self.assertEqual(receive_body(self.sock), b"47 00\r")
+        self.assertEqual(self.sock.recv(64), b"")
+
 
 if __name__ == "__main__":
     unittest.main()
+
