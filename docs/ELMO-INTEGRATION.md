@@ -3,7 +3,9 @@
 ## Eingelesener Projektstand
 
 Basis ist `origin/main` bei `c087fe6b0379ea2b2f85c62416c31cda1b1242fd`
-des OpenNextion_ELM327_Interface-Repositories.
+des OpenNextion_ELM327_Interface-Repositories. Vor der Veröffentlichung wurde
+zusätzlich `origin/main` bei `b98224566948931d94b3803927a1c9362b22a124`
+integriert; dessen inkrementeller DTC-Empfang bleibt erhalten.
 Firmware, native Header, Tests, Simulator, Auditwerkzeug, Buildskripte und
 Dokumentation wurden vor der Änderung eingelesen. Historische LAB-Berichte
 sind keine neue Hardwareprüfung dieser Integration.
@@ -11,7 +13,7 @@ sind keine neue Hardwareprüfung dieser Integration.
 Das ONX3248G035 nutzt einen ESP32-S3 mit ST7796, CST826, PCF8574 und optionalem
 MicroSD-Logging. Der bisherige Diagnosestack bleibt für PID-Auswahl,
 Readiness, Fuel Trims, DTC-/Mode-06-Dekodierung, Sitzungsinvalidierung und CSV
-zuständig. ELMo ersetzt die eigentliche TCP-Sende-/Empfangsschleife.
+zuständig. ELMo verwaltet Socket und gemeinsame inkrementelle Transaktion.
 
 ## Herkunft und Einbindung
 
@@ -24,11 +26,16 @@ zuständig. ELMo ersetzt die eigentliche TCP-Sende-/Empfangsschleife.
 
 ## Befehlsweg
 
-`UI / Polling → transact(Command) → ReadOnlyPolicy → ELMo::send → WiFiClient`
+`UI / Polling → startTransaction(Command) → ELMo::begin → Transaction / ReadOnlyPolicy → WiFiClient`
 
-Nur `transact` übergibt statische freigegebene Befehle an ELMo. Socket-Connect,
-TCP_NODELAY, Schließen und das begrenzte Verwerfen alter Eingangsbytes bleiben
-in der Firmware. Die bisherige Setupfolge bleibt erhalten:
+ELMo besitzt die gemeinsame `Transaction` aus `ObdTransaction.h` und den
+Socket. `ELMo::poll` verarbeitet höchstens 64 Bytes ohne auf Daten zu warten.
+Der DTC-Pfad kehrt zur Hauptschleife zurück; `transact` nutzt dieselbe
+Transaktion als kooperativen Wrapper für Setup, PIDs, HU/AU und Mode 06.
+Socket-Connect und TCP_NODELAY bleiben in der Firmware. Alte Eingangsbytes
+werden vor einer Anfrage auf höchstens 64 Bytes begrenzt verworfen;
+mehr verbleibende Bytes schließen die Verbindung ohne TX.
+Die bisherige Setupfolge bleibt erhalten:
 `ATZ`, `ATE0`, `ATL0`, `ATS0`, `ATH0`, `ATSP0`, danach PID-Erkennung und `ATDPN`.
 Im LAB-Profil muss unmittelbar nach `ATZ` die Simulator-Kennung passen,
 bevor irgendeine Fahrzeuganfrage möglich ist.
@@ -36,7 +43,7 @@ bevor irgendeine Fahrzeuganfrage möglich ist.
 `ELMo::initialize()` wird bewusst nicht verwendet: Die automatische
 Upstream-Initialisierung würde vor der LAB-Prüfung bereits `0100` senden.
 `ELMo::stop()` sendet in der lokalen Version kein implizites `AT WS`.
-Die Firmware erweitert ihre Befehls-Allowlist durch diese Integration nicht.
+Die separate S204-Erweiterung ergänzt ausschließlich dokumentierte Leseanfragen.
 
 ## Transportverhalten
 
@@ -44,19 +51,22 @@ Die Firmware erweitert ihre Befehls-Allowlist durch diese Integration nicht.
 - Bestehende Deadlines in Millisekunden: regulär 2500 ms, DTC/Diagnosen
   3500 ms, Protokollsuche 12000 ms.
 - UI-Callback während des Wartens, höchstens 64 Empfangsbytes je Durchlauf,
-  `delay(2)` für Netzwerk/Watchdog. Weiterhin synchrone Verarbeitung.
+  `delay(2)` im kooperativen Wrapper für Netzwerk/Watchdog. DTCs sind asynchron.
 - Höchstens 1024 Rohbytes vor dem Prompt, auch bei nicht druckbaren Zeichen.
 - CR/LF werden wie bisher normalisiert. Vollständige Antworten inklusive
   gemischter Fehler-/Erfolgsblöcke bleiben für die Parser erhalten.
 - Timeout, Verbindungsabbruch, Übergröße, kurzer Schreibvorgang und
-  Speicherfehler schließen den unvollständigen Stream. Kein Folgekommando
+  Speicherfehler im generischen Send-Overload schließen den unvollständigen Stream.
+  Die Firmware-Transaktion verwendet einen festen Puffer. Kein Folgekommando
   auf einer unsynchronisierten Sitzung.
 - UI-Abbruch verwirft Ergebnisse mittels bestehender Diagnosegeneration;
   eine bereits laufende Antwort wird weiter bis zum Prompt gelesen.
 
-Die generische ELMo-API ist selbst keine Read-only-Policy. Der Schutz sitzt
-in der typisierten Firmware-Schnittstelle. Der neue Send-Overload verwaltet
-keine automatische Adapterinitialisierung und ist nicht thread-sicher.
+Die generische ELMo-API ist selbst keine Read-only-Policy. Die Firmware
+verwendet ausschließlich `begin(Command)` mit der geschlossenen Allowlist.
+Der generische Send-Overload bleibt für API-Kompatibilität und eigene Tests
+erhalten und lehnt Zugriffe ab, solange die typisierte Transaktion belegt ist.
+Die APIs sind nicht thread-sicher und initialisieren den Adapter nicht automatisch.
 
 ## Ursprünglicher Dongle
 

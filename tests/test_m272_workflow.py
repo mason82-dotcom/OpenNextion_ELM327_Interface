@@ -132,7 +132,7 @@ class M272WorkflowTest(unittest.TestCase):
         functions=(
             section("static void onInspectionButton(","static void onMode06Button("),
             section("static void onMode06Button(","static void buildUi()"),
-            section("static bool transact(","// Once per second;"),
+            section("static bool startTransaction(","// Once per second;"),
             section("static void scanInspectionStep()","static void scanMisfireStep()"),
             section("static void scanMisfireStep()","#endif // OBD_CONNECTED_BUILD"),
         )

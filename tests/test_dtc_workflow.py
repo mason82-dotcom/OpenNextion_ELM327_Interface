@@ -29,6 +29,7 @@ PRELUDE = r'''
 #include <utility>
 #include <vector>
 #include "ReadOnlyPolicy.h"
+#include "ObdTransaction.h"
 #include "ObdIsoTp.h"
 #include "ObdDtcNames.h"
 #include "VehicleProfile.h"
@@ -51,6 +52,9 @@ lv_obj_t *scanText=&labels[0],*dtcDetailText=&labels[1];
 lv_obj_t *dtcModeText[]={&labels[2],&labels[3],&labels[4]};
 bool adapterReady=true,dtcScanRequested=false,inspectionRequested=false,misfireRequested=false;
 uint32_t diagGeneration=0,txCount=0,timeoutCount=0,inputErrorCount=0,lastLatencyMs=0;
+uint32_t lastCommandDone=0,dtcTransactionGeneration=0;
+bool dtcAsyncPending=false;
+
 uint16_t dtcScanCodes=0;
 bool dtcScanUndecodable=false;
 uint8_t dtcIndex=0;
@@ -58,8 +62,10 @@ String dtcReport;
 obd_diag::DtcEncoding dtcEncoding=obd_diag::DtcEncoding::Can;
 constexpr uint32_t CMD_TIMEOUT_MS=20;
 std::function<void()> tickAction;
-void uiTick(){auto action=std::move(tickAction);tickAction=nullptr;if(action)action();}
+unsigned uiTicks=0;
+void uiTick(){++uiTicks;auto action=std::move(tickAction);tickAction=nullptr;if(action)action();}
 ELMo elm;
+obd_transport::Transaction &transport=elm.transaction;
 WiFiClient &adapter=elm.client;
 void cancelTrimForOtherDiagnostic(){}
 void sdEvent(const char *){}
@@ -69,10 +75,15 @@ void sdWrite(char *,size_t){}
 // Here we check that the scan invokes it on transport failure.
 unsigned disconnectCalls=0;
 void markDisconnected(const char *){++disconnectCalls;adapterReady=false;
-  dtcScanRequested=false;++diagGeneration;}
+  dtcScanRequested=false;dtcAsyncPending=false;transport.reset();++diagGeneration;}
 '''
 
 SCENARIOS = r'''
+void dtcTick(){uiTick();scanOneDtcMode();delay(2);}
+void driveScan(){
+  for(int i=0;i<10000 && (dtcScanRequested||dtcAsyncPending);++i)dtcTick();
+  assert(!dtcScanRequested && !dtcAsyncPending);
+}
 int main(){
   lv_event_t click;
   // Invalid enum values never reach the sole wire path, including log output.
@@ -85,8 +96,13 @@ int main(){
   auto generation=diagGeneration;
   // Ten clicks while a reply is pending leave the original scan untouched.
   adapter.replies={"43 01 01 71\r>","47 00\r>","4A 00\r>"};
+  auto start=millis();
+  scanOneDtcMode(); // begins 03 and returns without waiting for the response
+  assert(millis()==start && dtcAsyncPending && transport.pending());
+  auto tx=txCount;
+  assert(!startTransaction(Command::PendingDtcs,3500) && txCount==tx);
   tickAction=[&](){for(int i=0;i<10;++i)onScanButton(&click);};
-  scanOneDtcMode();scanOneDtcMode();scanOneDtcMode();
+  driveScan();
   assert(diagGeneration==generation && !dtcScanRequested);
   assert((adapter.sent==std::vector<std::string>{"03","07","0A"}));
   assert(scanText->text=="1 Codes -> DETAILS");
@@ -95,14 +111,15 @@ int main(){
   // NO DATA must never turn into a false all-clear.
   onScanButton(&click);
   adapter.replies={"43 00>","47 00>","NO DATA>"};
-  for(int i=0;i<3;++i)scanOneDtcMode();
+  driveScan();
   assert(dtcScanUndecodable && scanText->text=="RAW -> DETAILS");
   // Cancel after a partial result, during the next transport transaction.
   onScanButton(&click);
   adapter.replies={"43 01 01 71>","47 01 03 01>"};
-  scanOneDtcMode();
-  tickAction=[&](){onDtcCancel(&click);};
-  scanOneDtcMode();
+  scanOneDtcMode();scanOneDtcMode(); // start + consume 03
+  scanOneDtcMode(); // 07 is now in flight
+  onDtcCancel(&click);
+  driveScan(); // loop keeps draining even though dtcScanRequested is false
   assert(!dtcScanRequested && dtcIndex==0 && dtcScanCodes==0);
   assert(scanText->text=="Abgebrochen: neu lesen");
   assert(dtcModeText[0]->text=="DTC: -- (abgebrochen)");
@@ -115,19 +132,24 @@ int main(){
   // Cancel + explicit restart during an old reply: discard the old generation.
   onScanButton(&click);
   adapter.replies={"43 01 01 71>"};
-  tickAction=[&](){onDtcCancel(&click);onScanButton(&click);};
   scanOneDtcMode();
+  onDtcCancel(&click);onScanButton(&click);
+  scanOneDtcMode(); // drain reply from the cancelled generation
   assert(dtcScanRequested && dtcIndex==0);
   assert(!std::strstr(dtcReport.c_str(),"P0171"));
   adapter.replies={"43 00>","47 00>","4A 00>"};
-  for(int i=0;i<3;++i)scanOneDtcMode();
+  driveScan();
   assert(!dtcScanRequested && scanText->text=="Keine DTCs");
   // Missing prompt after cancellation closes the stream, never sends next mode.
   onScanButton(&click);
   adapter.replies={"43 01 01 71"};
   auto sent=adapter.sent.size();
-  tickAction=[&](){onDtcCancel(&click);};
   scanOneDtcMode();
+  const auto ticksBefore=uiTicks;
+  for(int i=0;i<100;++i)dtcTick();
+  assert(transport.pending() && dtcAsyncPending && uiTicks==ticksBefore+100);
+  onDtcCancel(&click);
+  driveScan();
   assert(adapter.sent.size()==sent+1 && !adapter.online);
   assert(disconnectCalls==1 && timeoutCount==1 && !dtcScanRequested);
   // Reconnection alone has no callback that schedules a new DTC scan.
@@ -149,6 +171,13 @@ int main(){
   assert(!adapter.online && adapter.sent.size()==before);
   for(const auto &wire:adapter.sent)
     assert(obd_policy::allowedVehicleWire(wire.c_str()));
+  // An oversized DTC stream invalidates the session without another mode.
+  adapter.online=true;adapterReady=true;
+  onScanButton(&click);
+  adapter.replies={std::string(1025,'A')};
+  sent=adapter.sent.size();
+  driveScan();
+  assert(!adapter.online && disconnectCalls==2 && adapter.sent.size()==sent+1);
 }
 '''
 
@@ -162,8 +191,8 @@ class DtcWorkflowTest(unittest.TestCase):
                 "static void onDtcCancel", "static void onScanButton"),
             "static void onScanButton" + section(
                 "static void onScanButton", "\n\n#if OBD_CONNECTED_BUILD\nstatic void renderTrimPage"),
-            "static bool transact(" + section(
-                "static bool transact(", "// Once per second;"),
+            "static bool startTransaction(" + section(
+                "static bool startTransaction(", "// Once per second;"),
             "static void scanOneDtcMode()" + section(
                 "static void scanOneDtcMode()", "static void scanInspectionStep()"),
         )
@@ -178,7 +207,8 @@ class DtcWorkflowTest(unittest.TestCase):
                 "-I" + str(ROOT / "firmware/ObdDisplay"), str(source), "-o", str(binary),
                 str(ROOT / "firmware/ObdDisplay/src/ELMo/ELMo.cpp"),
             ], check=True, capture_output=True, text=True)
-            subprocess.run([str(binary)], check=True, capture_output=True, text=True)
+            result=subprocess.run([str(binary)], capture_output=True, text=True)
+            self.assertEqual(result.returncode,0,result.stderr)
 
     def test_scan_superseding_actions_invalidate_partial_dtc_results(self):
         for start, end in (

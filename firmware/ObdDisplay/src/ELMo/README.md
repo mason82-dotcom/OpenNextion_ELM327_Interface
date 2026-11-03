@@ -25,14 +25,23 @@ Local changes from upstream:
   without modifying the outer transaction's reply or status. Not thread-safe.
 - `stop()` closes the socket without the upstream implicit `AT WS` command.
 - The legacy String-returning API uses the same receive loop. It retains the
-  upstream sentinel strings; firmware uses only the bool-returning overload.
+  upstream sentinel strings; neither send overload is used by firmware.
 - The source includes its adjacent header instead of a global `<ELMo.h>`.
 
-The generic library itself is not a vehicle-command policy. Firmware keeps
-`transact(Command, ...)` as its only command entry point and checks
-`ReadOnlyPolicy.h` before calling ELMo. It uses `elm.client` solely for socket
-lifecycle and bounded stale-input removal. It never calls the legacy automatic
-`initialize()` (which sends commands and does not enforce the LAB identity gate).
+The firmware API additionally provides typed `begin(Command, now, timeout)`
+and nonblocking `poll(now)`, owning the same `ObdTransaction.h` engine used
+for incremental DTC receive on main. It accepts only the closed policy,
+uses a fixed 1025-byte buffer and consumes at most 64 bytes per poll. The
+1024-byte limit counts all input bytes, including discarded control bytes.
+Stale-input removal is bounded to 64 bytes; excess closes without transmitting.
+The synchronous firmware wrapper and async DTC path share this one slot.
+Generic send refuses to run while the typed slot is occupied; typed begin
+refuses during a generic send. This vendored integration depends on the
+adjacent project headers and is not a standalone upstream replacement.
+
+The generic legacy library API itself is not a vehicle-command policy.
+Firmware never calls automatic `initialize()` (which would bypass the LAB
+identity gate). It accesses `elm.client` for connection lifecycle only.
 
 Local tests run the actual ELMo source against Arduino/WiFiClient host doubles.
 They do not establish ESP32 timing, real adapter compatibility or vehicle safety.

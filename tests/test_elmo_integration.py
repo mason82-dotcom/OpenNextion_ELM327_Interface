@@ -28,13 +28,16 @@ class ElmoIntegrationTest(unittest.TestCase):
         code = re.sub(r"//[^\n]*", "", SRC)
         self.assertIn('#include "src/ELMo/ELMo.h"', code)
         self.assertIn("static ELMo elm;", code)
-        self.assertEqual(code.count("elm.send("), 1)
+        self.assertEqual(code.count("elm.begin("), 1)
+        self.assertEqual(code.count("elm.poll("), 1)
         self.assertNotIn("elm.initialize(", code)
         self.assertNotIn("adapter.write(", code)
-        body = code.split("static bool transact(", 1)[1].split("static void updateLinkStats(", 1)[0]
-        self.assertLess(body.index("obd_policy::allowedWire(command)"), body.index("elm.send("))
-        self.assertIn("elm.send(wire, answer, timeoutMs, uiTick)", body)
-        self.assertIn("dropped < 1024", body)
+        self.assertIn("transport = elm.transaction", code)
+        header = (SKETCH / "src/ELMo/ELMo.h").read_text()
+        self.assertIn("transaction.begin(client, command, now, timeoutMs)", header)
+        engine = (SKETCH / "ObdTransaction.h").read_text()
+        self.assertLess(engine.index("obd_policy::allowedWire(command)"), engine.index("io.write("))
+        self.assertIn("BYTE_BUDGET = 64", engine)
         self.assertIn("ELM327 LAB SIM v0.1", code)
 
 

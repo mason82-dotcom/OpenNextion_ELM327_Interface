@@ -12,6 +12,7 @@
 #include <lvgl.h>
 #include "BoardConfig.h"
 #include "ReadOnlyPolicy.h"
+#include "ObdTransaction.h"
 #include "ObdResponseParser.h"
 #include "ObdPidCatalog.h"
 #include "ObdDiagnostics.h"
@@ -83,7 +84,7 @@ static uint32_t tapCount = 0;
 
 #if OBD_CONNECTED_BUILD
 static ELMo elm;
-// Only socket lifecycle lives here; every command/reply uses ELMo::send().
+// ELMo owns the socket and the shared typed incremental transaction.
 static WiFiClient &adapter = elm.client;
 static uint32_t lastAttempt = 0, lastCommandDone = 0;
 static bool adapterReady = false, dtcScanRequested = false;
@@ -103,10 +104,13 @@ static uint8_t misfireDiscoveryStep = 0;
 static bool misfireMidsReady = false;
 static String inspectionReport, misfireReport;
 static uint8_t dtcIndex = 0;
-// transact() keeps LVGL alive, so touch callbacks can start, replace or
-// cancel a diagnostic while a reply is still pending. Each such action bumps
+// UI callbacks can start, replace or cancel a diagnostic while a reply is
+// still pending. Each such action bumps
 // the generation; a reply sent under an older generation is discarded.
 static uint32_t diagGeneration = 0;
+static obd_transport::Transaction &transport = elm.transaction;
+static bool dtcAsyncPending = false;
+static uint32_t dtcTransactionGeneration = 0;
 // Summary over all three DTC modes of one scan; the status line must not
 // report "keine" just because the last mode (0A) happened to be empty.
 static uint16_t dtcScanCodes = 0;
@@ -343,7 +347,7 @@ static void cancelDtcScan() {
     lv_label_set_text(dtcDetailText, dtcReport.c_str());
     lv_obj_scroll_to_y(lv_obj_get_parent(dtcDetailText), 0, LV_ANIM_OFF);
   }
-  // Do not send an ELM interrupt or close a healthy stream. transact() drains
+  // Do not send an ELM interrupt or close a healthy stream. loop() drains
   // the in-flight reply to its prompt; the generation guard discards it.
   // A missing prompt still causes the existing timeout/disconnect path.
 }
@@ -359,7 +363,7 @@ static void onDtcCancel(lv_event_t *event) {
 static void onScanButton(lv_event_t *event) {
   if (lv_event_get_code(event) != LV_EVENT_CLICKED) return;
 #if OBD_CONNECTED_BUILD
-  // LVGL runs inside transact(): repeated clicks must not restart the scan.
+  // UI remains active while a reply is pending; clicks must not restart it.
   if (dtcScanRequested) return;
   if (!adapterReady) {
     lv_label_set_text(scanText, "ELM327 nicht verbunden");
@@ -680,32 +684,52 @@ static void uiTick() {
 }
 
 #if OBD_CONNECTED_BUILD
-// Sole TCP transmit path. A raw string cannot reach the adapter.
-static bool transact(Command command, String &answer, uint32_t timeoutMs = CMD_TIMEOUT_MS) {
-  const char *wire = obd_policy::wireCommand(command);
-  if (!adapter.connected() || wire == nullptr || !obd_policy::allowedWire(command)) return false;
-  // Bytes before our request are not an answer to it (late reply, banner).
-  // Drop them and count them, so a desync is visible on the INFO page.
-  if (adapter.available()) {
-    ++inputErrorCount;
-    unsigned dropped = 0;
-    while (adapter.available() && dropped < 1024) { adapter.read(); ++dropped; }
-    if (adapter.available()) { adapter.stop(); return false; }
+// One shared typed transmit path for synchronous setup/PIDs and async DTCs.
+static bool startTransaction(Command command, uint32_t timeoutMs) {
+  if (transport.state()!=obd_transport::State::Idle) return false;
+  const bool started=elm.begin(command, millis(), timeoutMs);
+  if (transport.writeAttempted()) {
+    ++txCount;
+    Serial.printf("OBD_TX,%lu,%lu,%s\n", (unsigned long)millis(),
+                  (unsigned long)txCount, obd_policy::wireCommand(command));
   }
-  ++txCount;
-  // Audit only static allowlisted commands: no credentials or raw responses.
-  Serial.printf("OBD_TX,%lu,%lu,%s\n", (unsigned long)millis(),
-                (unsigned long)txCount, wire);
-  const uint32_t start = millis();
-  if (elm.send(wire, answer, timeoutMs, uiTick)) {
-    lastLatencyMs = millis() - start;
-    return true;
+  if (!started) {
+    if (transport.state()!=obd_transport::State::Idle && !transport.pending())
+      ++inputErrorCount;
+    return false;
   }
-  // ELMo closes the stream on incomplete/oversized replies and short writes.
-  if (elm.lastStatus() == ELMo::Status::Timeout ||
-      elm.lastStatus() == ELMo::Status::Disconnected) ++timeoutCount;
+  if (transport.discarded()) ++inputErrorCount;
+  return true;
+}
+
+static void pumpTransaction() {
+  const bool pending=transport.pending();
+  elm.poll(millis());
+  if (!pending || transport.pending()) return;
+  lastCommandDone=millis(); // gap starts at prompt/failure, not every loop tick
+  if (transport.state()==obd_transport::State::Ready)
+    lastLatencyMs=transport.latency();
+  else if (transport.state()==obd_transport::State::Timeout ||
+           transport.state()==obd_transport::State::Disconnected)
+    ++timeoutCount;
   else ++inputErrorCount;
-  return false;
+}
+
+// Transitional cooperative wrapper. Setup, PID, HU/AU and Mode06 still use
+// it; the DTC receive path below returns to loop() instead of waiting here.
+static bool transact(Command command, String &answer, uint32_t timeoutMs = CMD_TIMEOUT_MS) {
+  answer="";
+  if (transport.state()!=obd_transport::State::Idle) return false;
+  if (!startTransaction(command,timeoutMs)) {transport.reset();return false;}
+  while (transport.pending()) {
+    uiTick();
+    pumpTransaction();
+    if (transport.pending()) delay(2);
+  }
+  const bool ok=transport.state()==obd_transport::State::Ready;
+  if (ok) answer=transport.reply();
+  transport.reset();
+  return ok;
 }
 
 // Once per second; avoids an LVGL label redraw for every single command.
@@ -738,6 +762,9 @@ static void markDisconnected(const char *reason) {
     sdEvent(event);
   }
   adapterReady = false;
+  adapter.stop();
+  transport.reset();
+  dtcAsyncPending = false;
   pidMasks[0] = pidMasks[1] = pidMasks[2] = 0;
   pollScheduler.reset();
   for (std::size_t i=0;i<obd_pids::count;++i) pidValid[i]=false;
@@ -1080,14 +1107,27 @@ static void pollOnePid() {
 static void scanOneDtcMode() {
   const Command modes[] = {Command::StoredDtcs, Command::PendingDtcs, Command::PermanentDtcs};
   const char *names[] = {"03 gespeichert", "07 ausstehend", "0A permanent"};
-  if (dtcIndex >= 3) { dtcScanRequested = false; return; }
   String answer;
-  const uint32_t generation = diagGeneration;
-  if (!transact(modes[dtcIndex], answer, 3500)) {
-    markDisconnected("DTC: Timeout/Sync-Verlust");
-    dtcScanRequested = false; return;
+  if (!dtcAsyncPending) {
+    if (!dtcScanRequested) return;
+    if (dtcIndex >= 3) {dtcScanRequested=false;return;}
+    if (!startTransaction(modes[dtcIndex],3500)) {
+      markDisconnected("DTC: Anfrage fehlgeschlagen");return;
+    }
+    dtcTransactionGeneration=diagGeneration;
+    dtcAsyncPending=true;
+    return;
   }
-  if (generation != diagGeneration) return; // superseded during transact
+  pumpTransaction();
+  if (transport.pending()) return;
+  dtcAsyncPending=false;
+  const bool ok=transport.state()==obd_transport::State::Ready;
+  if (ok) answer=transport.reply();
+  transport.reset();
+  if (!ok) {markDisconnected("DTC: Timeout/Sync-Verlust");return;}
+  // A cancelled/replaced request is drained but never published. In
+  // particular, do not advance the newly started scan's mode index.
+  if (dtcTransactionGeneration!=diagGeneration || !dtcScanRequested) return;
   Serial.printf("DTC_RAW,%s,%s\n", names[dtcIndex], answer.c_str());
   const uint8_t responseMode[] = {0x43,0x47,0x4A};
   auto dtcs=obd_isotp::parseDtcs(answer.c_str(),responseMode[dtcIndex],dtcEncoding);
@@ -1457,12 +1497,13 @@ void loop() {
   }
   // Next request as soon as the previous prompt arrived (plus a short gap),
   // instead of a fixed 350 ms cadence that wasted most of the link time.
-  if (adapterReady && now - lastCommandDone >= COMMAND_GAP_MS) {
-    if (inspectionRequested) scanInspectionStep();
+  if (adapterReady && (dtcAsyncPending || now - lastCommandDone >= COMMAND_GAP_MS)) {
+    // Drain even a cancelled DTC before any other user of the same socket.
+    if (dtcAsyncPending) scanOneDtcMode();
+    else if (inspectionRequested) scanInspectionStep();
     else if (misfireRequested) scanMisfireStep();
     else if (dtcScanRequested) scanOneDtcMode();
     else pollOnePid();
-    lastCommandDone = millis();
   }
   updateLinkStats(millis());
   sdFlushIfDue(millis());
@@ -1477,4 +1518,3 @@ void loop() {
 #endif
   delay(5);
 }
-

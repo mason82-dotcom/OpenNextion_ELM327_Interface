@@ -1,5 +1,5 @@
 #pragma once
-// LAB / VEHICLE USE ONLY AFTER OFFLINE DISPLAY AND READ-ONLY GATE CHECK.
+// VEHICLE PROFILE ONLY; keep the separate LAB configuration unchanged.
 // Copy to Config.h locally; NEVER commit the resulting file.
 // SSID/password must match the original dongle; no credentials are known here.
 // Empty password is correct ONLY for a confirmed open dongle WLAN.

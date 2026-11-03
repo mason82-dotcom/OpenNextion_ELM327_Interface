@@ -5,6 +5,7 @@
 #define ELMo_h
 #include <Arduino.h>
 #include <WiFi.h>
+#include "../../ObdTransaction.h"
 
 class ELMo {
 private:
@@ -25,6 +26,12 @@ public:
 	bool send(const char *message, String &received, uint32_t timeoutMs,
 	          void (*idle)() = nullptr);
 	Status lastStatus() const { return _lastStatus; }
+	// Typed incremental session used by firmware, including async DTC receive.
+	obd_transport::Transaction transaction;
+	bool begin(obd_policy::Command command, uint32_t now, uint32_t timeoutMs) {
+		return !_sending && transaction.begin(client, command, now, timeoutMs);
+	}
+	void poll(uint32_t now) { transaction.poll(client, now); }
 	bool initialize();
 	bool stop();
 	bool connected();

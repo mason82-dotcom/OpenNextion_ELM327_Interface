@@ -18,7 +18,7 @@ ELMo::ELMo() {
 bool ELMo::send(const char *message, String &received, uint32_t timeoutMs,
                 void (*idle)()) {
     // Nested calls from an idle/UI callback must never interleave requests.
-    if (_sending) return false;
+    if (_sending || transaction.state()!=obd_transport::State::Idle) return false;
     received = "";
     if (!message || !*message || timeoutMs == 0) {
         _lastStatus = Status::InvalidCommand;

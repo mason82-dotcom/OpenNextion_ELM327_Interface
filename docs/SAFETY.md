@@ -40,5 +40,7 @@ Fahrzeug-Schreibzugriffe dürfen **niemals** durch bloßes Aktivieren einer UI-O
 - SD-Logging ist optional und hat weiterhin keine RTC-Zeitstempel.
 - Fehlende/mehrdeutige Messwerte ergeben n/v statt 0. Echte ECU-Unterstützung
   und Adapterformat müssen am konkreten Fahrzeug bestätigt werden.
-- UI ruft Netzwerktransaktionen synchron ab; höhere Last kann Touch/Grafik verzögern.
+- DTC-Empfang läuft inkrementell in der Hauptschleife. Setup, Live-PIDs,
+  HU/AU und Mode 06 warten weiterhin kooperativ mit UI-Callback;
+  höhere Last kann Touch/Grafik verzögern.
 - Keine Fahrzeug-Werkstattdiagnose oder zertifizierte Prüffunktion.

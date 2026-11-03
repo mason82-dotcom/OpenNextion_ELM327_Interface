@@ -101,6 +101,20 @@ int main() {
   assert(elm.send("03",answer,20,nestedSend));
   assert(elm.client.sent.size()==sent+1 && elm.lastStatus()==Status::Ok);
   assert(answer.equals("43 00"));
+  // Typed incremental requests share one slot, and generic send cannot bypass it.
+  elm.client.replies={"43 00>"};
+  assert(elm.begin(obd_policy::Command::StoredDtcs,millis(),20));
+  sent=elm.client.sent.size();
+  assert(!elm.send("07",answer,20));
+  assert(!elm.begin(obd_policy::Command::PendingDtcs,millis(),20));
+  assert(elm.client.sent.size()==sent);
+  elm.poll(millis());
+  assert(elm.transaction.state()==obd_transport::State::Ready);
+  assert(std::strcmp(elm.transaction.reply(),"43 00")==0);
+  elm.transaction.reset();
+  assert(!elm.begin(static_cast<obd_policy::Command>(255),millis(),20));
+  assert(elm.client.sent.size()==sent);
+  elm.transaction.reset();
   sent=elm.client.sent.size();
   assert(elm.stop());
   assert(!elm.client.online && elm.client.sent.size()==sent);
