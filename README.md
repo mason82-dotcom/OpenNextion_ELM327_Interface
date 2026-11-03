@@ -82,7 +82,8 @@ Seriell: `OBD: profile MB C350 W204 M272 (2008)`, `CAN=1`, keine
 Anfrage (ein TCP-Segment, Nagle aus), keine Timeouts oder Reconnects.
 MODE 06: `06A2`–`06A7` gesendet (je ca. 80 ms) und alle sechs
 **Mehrframe**-Antworten dekodiert, Display zeigt Zyl. 1–3 B1 und Zyl. 4–6 B2
-mit EWMA/Zyklus. **Nicht geprüft:** DTC-Padding (≥3 Codes) und alles am
+mit EWMA/Zyklus. DTC-Padding per Fixture `PADDED` bestanden (4 Codes,
+1 Antwortblock). **Nicht geprüft:** alles am
 echten ELM327/Fahrzeug. Ab dieser Version schreibt Mode 06 zusätzlich
 `CSV`-Zeilen (`ms,06A2,Zyl1 EWMA,0,count,latency`) auf Serial und SD.
 
