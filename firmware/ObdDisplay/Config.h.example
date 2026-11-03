@@ -1,7 +1,10 @@
 #pragma once
-// LAB / VEHICLE USE ONLY AFTER OFFLINE DISPLAY AND READ-ONLY GATE CHECK.
+// VEHICLE PROFILE ONLY; keep the separate LAB configuration unchanged.
 // Copy to Config.h locally; NEVER commit the resulting file.
-#define ELM_WIFI_SSID "YOUR_ELM327_WIFI_SSID"
+// User-confirmed WiFi settings; empty password means an open WLAN.
+#define ELM_WIFI_SSID "WiFi_OBDII"
 #define ELM_WIFI_PASSWORD ""
+// Unverified defaults: the WiFi name does not confirm adapter IP or port.
 #define ELM_HOST "192.168.0.10"
 #define ELM_PORT 35000
+
