@@ -134,7 +134,7 @@ Protokoll per `ATDPN` als CAN erkannt; Fotos der DTC-/DETAILS-Seite):
 | `TWO` | 03: `P0174 (+4)`, Status `5 Codes -> DETAILS` | 5 Codes aus 2 Antwortblöcken | bestanden |
 | `TRUNCATED` | 03: `RAW …`, Status `RAW -> DETAILS` | `NICHT SICHER DEKODIERBAR` + Rohantwort | bestanden, keine Teilcodes |
 | `BAD_SEQUENCE` | 03: `RAW …`, Status `RAW -> DETAILS` | `NICHT SICHER DEKODIERBAR` + Rohantwort | bestanden, keine Teilcodes |
-| `PADDED` (ab 2026-11-03) | erwartet 03: `P0171 (+3)`, Status `4 Codes -> DETAILS` | P0171, P0301–P0303, 1 Antwortblock | **noch nicht am Board geprüft** |
+| `PADDED` (2026-11-03) | 03: `P0171 (+3)`, Status `4 Codes -> DETAILS` | P0171, P0301–P0303 mit Text und M272-Hinweis, 1 Antwortblock | bestanden (Foto), echtes Adapterformat mit Füllbytes |
 
 Dabei gefunden und behoben: Die Statuszeile meldete `Keine DTCs`,
 obwohl 03 Codes enthielt (letzter Modus 0A leer), und die
