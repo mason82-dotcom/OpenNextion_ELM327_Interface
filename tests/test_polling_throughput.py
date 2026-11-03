@@ -25,8 +25,11 @@ class PollingThroughputTest(unittest.TestCase):
     def test_gap_is_measured_after_the_reply(self):
         body = section("void loop() {", "delay(5);")
         self.assertIn("now - lastCommandDone >= COMMAND_GAP_MS", body)
-        self.assertLess(body.index("else pollOnePid();"),
-                        body.index("lastCommandDone = millis();"))
+        self.assertNotIn("lastCommandDone = millis();", body)
+        pump = section("static void pumpTransaction()", "static bool transact(")
+        self.assertLess(pump.index("if (!pending || transport.pending()) return;"),
+                        pump.index("lastCommandDone=millis();"))
+        self.assertIn("if (dtcAsyncPending) scanOneDtcMode();", body)
 
     def test_wlan_stays_awake_and_tolerates_latency_spikes(self):
         setup = section("void setup() {", "void loop() {")
@@ -39,10 +42,12 @@ class PollingThroughputTest(unittest.TestCase):
     def test_stats_label_is_not_redrawn_per_command(self):
         transact = section("static bool transact(", "static void updateLinkStats(")
         self.assertNotIn("statsText", transact)
-        self.assertIn("lastLatencyMs = millis() - start;", transact)
+        pump = section("static void pumpTransaction()", "static bool transact(")
+        self.assertIn("lastLatencyMs=transport.latency();", pump)
         self.assertIn("if (elapsed < 1000) return;",
                       section("static void updateLinkStats(", "static void markDisconnected("))
 
 
 if __name__ == "__main__":
     unittest.main()
+

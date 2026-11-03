@@ -35,6 +35,8 @@ jobs:
           /tmp/obd-sd-log-test
           g++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/ObdDisplay tests/test_vehicle_profile.cpp -o /tmp/obd-vehicle-profile-test
           /tmp/obd-vehicle-profile-test
+          g++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/ObdDisplay tests/test_obd_transaction.cpp -o /tmp/obd-transaction-test
+          /tmp/obd-transaction-test
           python3 -m unittest discover -s tests -p 'test_*.py' -v
 
   firmware:
@@ -68,3 +70,4 @@ jobs:
           cp firmware/ObdDisplay/LabConfig.h.example firmware/ObdDisplay/LabConfig.h
           trap 'rm -f firmware/ObdDisplay/LabConfig.h' EXIT
           bash scripts/pi/build.sh lab
+
