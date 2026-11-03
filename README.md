@@ -20,7 +20,7 @@ Eigenständiger OBD-II-Monitor auf dem **OpenNextion ONX3248G035** (ESP32-S3, 3,
 
 ## Sicherheit
 
-Die Firmware kann ausschließlich Kommandos senden, die in `ReadOnlyPolicy.h` fest vorgegeben sind. Adapter-Befehle `ATZ/ATE0/ATL0/ATS0/ATH0/ATSP0` richten *nur den ELM327-Adapter* ein, während die Fahrzeuganfragen ausschließlich `0100, 0105, 010C, 010D, 03, 07, 0A` sind. Ein OBD-Lesezugriff sendet Diagnoseframes an das Steuergerät; das ist **keine passive CAN-Aufzeichnung**, verändert aber bei normkonformer ECU keine Codierung und löst keine Stellgliedtests aus.
+Die Firmware kann ausschließlich Kommandos senden, die in `ReadOnlyPolicy.h` fest vorgegeben sind. Adapter-Befehle `ATZ/ATE0/ATL0/ATS0/ATH0/ATSP0/ATDPN` konfigurieren bzw. lesen den ELM327-Adapter. Fahrzeugseitig sind ausgewählte Mode-01-PIDs, feste Mode-02-PIDs aus Freeze Frame 00, DTC-Lesearten 03/07/0A, Mode-06-Unterstützung und Aussetzer-MIDs sowie ausschließlich `0900/0902` für FIN-Unterstützung/FIN erlaubt. Ein OBD-Lesezugriff sendet Diagnoseframes an das Steuergerät; das ist **keine passive CAN-Aufzeichnung**, verändert aber bei normkonformer ECU keine Codierung und löst keine Stellgliedtests aus.
 
 Keine Verantwortung für abweichendes Verhalten fehlerhafter ELM327-Klone oder nicht normkonformer Steuergeräte. Erst am Tisch mit ELM327-Simulator testen, dann Fahrzeugtests bei sicherem Fahrzeugstillstand. Details: [Sicherheitskonzept](docs/SAFETY.md).
 
@@ -28,10 +28,44 @@ Keine Verantwortung für abweichendes Verhalten fehlerhafter ELM327-Klone oder n
 
 - Board: ONX3248G035, ESP32-S3, LCD 320 × 480, 16 MB Flash, 8 MB OPI-PSRAM.
 - Arduino ESP32 Core **3.3.2**; Bibliotheken **lvgl 8.3.11**, GFX Library for Arduino, Adafruit CST8XX Library, Adafruit PCF8574.
+- **ELMo 1.1.2** ist mit gezielten Transportanpassungen direkt unter `firmware/ObdDisplay/src/ELMo/` eingebunden (MIT, fester Upstream-Commit). Keine separate ELMo-Installation erforderlich. Architektur, Unterschiede und Prüfungen: [ELMo-Integration](docs/ELMO-INTEGRATION.md).
 - Arduino-CLI FQBN: `esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=app3M_fat9M_16MB`
 - Quellcode: `firmware/ObdDisplay/ObdDisplay.ino`.
-- Fahrzeugprofil: `firmware/ObdDisplay/VehicleProfile.h`, aktiv **MB C350 W204 M272 (2008)** (6 Zyl., 2 Baenke, erwartet CAN, wird nur geprueft, nie erzwungen). Generisch: `-DOBD_VEHICLE_GENERIC`. Review: [REVIEW-2026-11-03](docs/REVIEW-2026-11-03.md).
+- Fahrzeugprofil: `firmware/ObdDisplay/VehicleProfile.h`, aktiv **C350 S204 M272.961 (2008)**, Heckantrieb / Baumuster 204.256 / 200 kW, gemäß Nutzerangabe und Mercedes-Archiv. 6 Zylinder, 2 Bänke, erwartet CAN, wird nur geprüft und nie erzwungen. Generisch: `-DOBD_VEHICLE_GENERIC`.
 - Standardadresse des zuvor verwendeten ELM327-WLAN-Dongles: `192.168.0.10:35000`. WLAN-SSID und tatsächliche Adapteradresse können abweichen.
+
+### Recherchierte Funktionen für den C350 S204 / M272.961
+
+- **21 Live-PIDs:** die bisherigen 15 plus Zündwinkel Zylinder 1, Motorlaufzeit,
+  Tankentlüftungs-Sollwert, Tankfüllstand und ECU-Katalysatortemperatur B1/B2.
+  Abfragen erfolgen ausschließlich nach positiver Mode-01-Unterstützung.
+- **DTC → HU/AU:** ergänzt FIN über `0900/0902` (CAN) und Freeze Frame 00 mit
+  Drehzahl, Tempo, Last, Temperaturen, Fuel Trims, MAF/MAP, Drossel und Zündwinkel.
+  Ein eindeutig gespeicherter Freeze-Frame-DTC und die eigene Mode-02-Bitmap
+  entscheiden, welche Snapshot-Werte gelesen werden.
+- **ALLE PIDS → MODE 06:** liest zunächst die MID-Unterstützungskette bis `06A0`.
+  Nur angekündigte Aussetzer-MIDs A2–A7 werden abgefragt. Nicht unterstützt,
+  widersprüchlich oder nicht sicher lesbar ergibt keine erfundenen Nullzähler.
+- Quellen, Formeln, Fahrzeugzuordnung, Simulatorprüfung und Grenzen gegenüber
+  Mercedes-Spezialdiagnose: [M272/S204-Diagnosefunktionen](docs/M272-S204-DIAGNOSTICS.md).
+
+Die neuen Funktionen sind implementiert und werden mit synthetischen
+LAB-Daten geprüft; die tatsächlich vom Fahrzeug angebotenen PIDs/MIDs sind
+ohne Fahrzeugantworten weiterhin nicht bestätigt.
+
+### Ursprünglichen WLAN-Dongle konfigurieren
+
+Der bisherige TCP-Endpunkt `192.168.0.10:35000` ist in `Config.h.example`
+vorbelegt und entspricht dem bisherigen Android-Projekt. Für die WLAN-Anmeldung
+werden zusätzlich die tatsächliche **SSID** und gegebenenfalls das
+**WLAN-Passwort** benötigt; diese sind nicht im Repository hinterlegt.
+Der TCP-Transport implementiert keinen separaten Benutzername-/Passwort-Login.
+
+Die lokale `firmware/ObdDisplay/Config.h` aus der Vorlage erstellen und nur dort
+die WLAN-Zugangsdaten eintragen. Bei einem bestätigten offenen Dongle-WLAN
+bleibt `ELM_WIFI_PASSWORD` leer. Die Datei ist Git-ignoriert. Ihre Anwesenheit
+aktiviert den Connected-Build; für Offline- und LAB-Build muss sie fehlen.
+Die Integration baut und testet Firmware, flasht aber kein Board.
 
 ### Auf Raspberry Pi 5 bauen (ohne Flashen)
 

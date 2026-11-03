@@ -33,26 +33,10 @@ PRELUDE = r'''
 #include "ObdIsoTp.h"
 #include "ObdDtcNames.h"
 #include "VehicleProfile.h"
+#include "Arduino.h"
+#include "src/ELMo/ELMo.h"
 using obd_policy::Command;
 static constexpr const obd_vehicle::Profile &VEHICLE=obd_vehicle::active;
-class String {
-  std::string s;
-public:
-  String() = default;
-  String(const char *v):s(v){}
-  String(std::string v):s(std::move(v)){}
-  String(unsigned long v):s(std::to_string(v)){}
-  const char *c_str() const {return s.c_str();}
-  size_t length() const {return s.size();}
-  void reserve(size_t n){s.reserve(n);}
-  String substring(size_t a,size_t b) const {return s.substr(a,b-a);}
-  void replace(char a,char b){for(auto &c:s)if(c==a)c=b;}
-  void trim(){auto a=s.find_first_not_of(" \r\n\t");
-    s=a==std::string::npos?"":s.substr(a,s.find_last_not_of(" \r\n\t")-a+1);}
-  String &operator+=(const String &v){s+=v.s;return *this;}
-  String &operator+=(char c){s+=c;return *this;}
-  friend String operator+(String a,const String &b){return a+=b;}
-};
 struct lv_obj_t {std::string text;int scroll=99;};
 struct lv_event_t {int code=1;};
 constexpr int LV_EVENT_CLICKED=1,LV_ANIM_OFF=0;
@@ -70,39 +54,19 @@ bool adapterReady=true,dtcScanRequested=false,inspectionRequested=false,misfireR
 uint32_t diagGeneration=0,txCount=0,timeoutCount=0,inputErrorCount=0,lastLatencyMs=0;
 uint32_t lastCommandDone=0,dtcTransactionGeneration=0;
 bool dtcAsyncPending=false;
-obd_transport::Transaction transport;
+
 uint16_t dtcScanCodes=0;
 bool dtcScanUndecodable=false;
 uint8_t dtcIndex=0;
 String dtcReport;
 obd_diag::DtcEncoding dtcEncoding=obd_diag::DtcEncoding::Can;
 constexpr uint32_t CMD_TIMEOUT_MS=20;
-uint32_t clockMs=0;
-unsigned uiTicks=0;
-uint32_t millis(){return clockMs;}
-void delay(unsigned n){clockMs+=n;}
 std::function<void()> tickAction;
+unsigned uiTicks=0;
 void uiTick(){++uiTicks;auto action=std::move(tickAction);tickAction=nullptr;if(action)action();}
-struct SerialDouble {
-  std::string log;
-  void printf(const char *fmt,...){char b[2048];va_list a;va_start(a,fmt);
-    vsnprintf(b,sizeof b,fmt,a);va_end(a);log+=b;}
-} Serial;
-struct AdapterDouble {
-  bool online=true;
-  std::deque<std::string> replies;
-  std::vector<std::string> sent;
-  std::string rx;
-  bool connected(){return online;}
-  size_t write(const uint8_t *b,size_t n){
-    assert(rx.empty()&&n>1&&b[n-1]=='\r');
-    sent.emplace_back(reinterpret_cast<const char *>(b),n-1);
-    if(!replies.empty()){rx=replies.front();replies.pop_front();}
-    return n;}
-  int available(){return static_cast<int>(rx.size());}
-  int read(){char c=rx.front();rx.erase(0,1);return c;}
-  void stop(){online=false;rx.clear();}
-} adapter;
+ELMo elm;
+obd_transport::Transaction &transport=elm.transaction;
+WiFiClient &adapter=elm.client;
 void cancelTrimForOtherDiagnostic(){}
 void sdEvent(const char *){}
 namespace obd_log {size_t dtcRow(char *,size_t,uint32_t,const char *,const char *){return 0;}}
@@ -195,9 +159,20 @@ int main(){
   for(auto c:{Command::Rpm,Command::Coolant,Command::Speed}){
     adapter.replies={"41 00>"};assert(transact(c,answer));
   }
+  // Late bytes must not become the next PID reply; bounded stale-input drain.
+  adapter.rx="old response>";
+  adapter.replies={"41 0C 13 48>"};
+  auto errors=inputErrorCount;
+  assert(transact(Command::Rpm,answer));
+  assert(answer.equals("41 0C 13 48") && inputErrorCount==errors+1);
+  adapter.rx=std::string(1025,'X');
+  auto before=adapter.sent.size();
+  assert(!transact(Command::Rpm,answer));
+  assert(!adapter.online && adapter.sent.size()==before);
   for(const auto &wire:adapter.sent)
     assert(obd_policy::allowedVehicleWire(wire.c_str()));
   // An oversized DTC stream invalidates the session without another mode.
+  adapter.online=true;adapterReady=true;
   onScanButton(&click);
   adapter.replies={std::string(1025,'A')};
   sent=adapter.sent.size();
@@ -228,9 +203,12 @@ class DtcWorkflowTest(unittest.TestCase):
             subprocess.run([
                 "g++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
                 "-DOBD_CONNECTED_BUILD=1", "-DOBD_LAB_BUILD=1",
+                "-I" + str(ROOT / "tests/host"),
                 "-I" + str(ROOT / "firmware/ObdDisplay"), str(source), "-o", str(binary),
+                str(ROOT / "firmware/ObdDisplay/src/ELMo/ELMo.cpp"),
             ], check=True, capture_output=True, text=True)
-            subprocess.run([str(binary)], check=True, capture_output=True, text=True)
+            result=subprocess.run([str(binary)], capture_output=True, text=True)
+            self.assertEqual(result.returncode,0,result.stderr)
 
     def test_scan_superseding_actions_invalidate_partial_dtc_results(self):
         for start, end in (
@@ -244,4 +222,3 @@ class DtcWorkflowTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -14,7 +14,7 @@ enum class State : std::uint8_t {
 class Transaction {
   State state_ = State::Idle;
   char reply_[1025] = {};
-  std::size_t size_ = 0, discarded_ = 0;
+  std::size_t size_ = 0, discarded_ = 0, rawBytes_ = 0;
   std::uint32_t started_ = 0, timeout_ = 0, latency_ = 0;
   bool writeAttempted_ = false;
 public:
@@ -25,7 +25,7 @@ public:
   std::size_t discarded() const {return discarded_;}
   std::uint32_t latency() const {return latency_;}
   bool writeAttempted() const {return writeAttempted_;}
-  void reset() {state_=State::Idle;size_=discarded_=0;reply_[0]='\0';writeAttempted_=false;}
+  void reset() {state_=State::Idle;size_=discarded_=rawBytes_=0;reply_[0]='\0';writeAttempted_=false;}
 
   template<class Io>
   bool begin(Io &io, obd_policy::Command command, std::uint32_t now,
@@ -64,7 +64,7 @@ public:
       const int c=io.read();
       if (c<0) break;
       if (c=='>') {state_=State::Ready;return;}
-      if (size_>=sizeof reply_-1) {io.stop();state_=State::Overflow;return;}
+      if (++rawBytes_>sizeof reply_-1) {io.stop();state_=State::Overflow;return;}
       if (c=='\r' || c=='\n') reply_[size_++]='\n';
       else if (c>=32 && c<=126) reply_[size_++]=static_cast<char>(c);
       reply_[size_]='\0';

@@ -1,8 +1,11 @@
 # Inkrementeller DTC-Empfang: Stufe 1
 
 Basis: `main` bei `c087fe6b0379ea2b2f85c62416c31cda1b1242fd`.
-Diese Änderung führt keine externe Bibliothek ein. ELMo wird nicht eingebaut.
-Die eigene feste Befehls-Allowlist bleibt unverändert.
+Diese ursprüngliche Stufe führte keine externe Bibliothek ein.
+Die nachfolgende [ELMo-Integration](ELMO-INTEGRATION.md) erhält die hier
+beschriebene inkrementelle Zustandsmaschine; ELMo besitzt jetzt ihren
+gemeinsamen Puffer und Socket. Die [S204-Erweiterung](M272-S204-DIAGNOSTICS.md)
+ergänzt dokumentierte Leseanfragen in der geschlossenen Allowlist.
 
 ## Verhalten
 
@@ -15,7 +18,8 @@ Teilschreiben beendet die Verbindung. Auch dieser Sendeversuch erscheint im
 OBD_TX-Protokoll.
 
 `poll()` wartet nicht auf weitere Empfangsdaten und liest pro Aufruf höchstens
-64 Bytes. Die normalisierte Antwort ist auf 1024 Zeichen begrenzt. Ein fehlender
+64 Bytes. Seit der ELMo-Integration zählen auch verworfene Steuerbytes zur
+Grenze von 1024 Rohbytes vor dem Prompt. Ein fehlender
 Prompt nach Ablauf des jeweiligen Timeouts, Pufferüberlauf, Verbindungsverlust
 oder Teilschreiben beendet die Sitzung. Vor einem neuen Befehl werden höchstens
 64 alte Bytes verworfen; mehr Restdaten schließen die Verbindung, statt die

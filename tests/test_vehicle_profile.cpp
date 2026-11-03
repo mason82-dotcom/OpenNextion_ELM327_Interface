@@ -7,6 +7,7 @@ using namespace obd_vehicle;
 int main(){
   static_assert(active.cylinders==6 && active.banks==2, "C350 M272: V6");
   assert(std::strstr(active.name,"C350")!=nullptr);
+  assert(std::strstr(active.name,"S204") && std::strstr(active.name,"272.961"));
   assert(active.bus==ExpectedBus::Can && active.m272Hints);
   assert(bankOf(active,1)==1 && bankOf(active,3)==1 && bankOf(active,4)==2 && bankOf(active,6)==2);
   assert(busMatches(active,true) && !busMatches(active,false));

@@ -201,10 +201,16 @@ inline bool parseMisfire(const char *response,std::uint8_t cylinder,
   const std::uint8_t mid=std::uint8_t(0xA1+cylinder);
   Assembler asm_;
   bool bad=false;
+  auto accept=[&](const std::uint8_t *data,std::size_t size){
+    if(size<10 || data[0]!=0x46 || (size-1)%9!=0){bad=true;return;}
+    for(std::size_t i=1;i<size;i+=9)
+      if(data[i]!=mid){bad=true;return;}
+    obd_diag::accumulateMisfire(data,size,mid,out);
+  };
   auto finish=[&](){
     if(!asm_.active)return;
     if(asm_.complete())
-      obd_diag::accumulateMisfire(asm_.message,asm_.used,mid,out);
+      accept(asm_.message,asm_.used);
     else bad=true;
     asm_.reset();
   };
@@ -223,8 +229,14 @@ inline bool parseMisfire(const char *response,std::uint8_t cylinder,
     }
     finish();
     obd_response::Frame frame;
-    if(obd_response::decodeLine(line,len,frame))
-      obd_diag::accumulateMisfire(frame.data,frame.size,mid,out);
+    if(obd_response::decodeLine(line,len,frame)) {
+      if(frame.size==2 && frame.data[0]==0x06 && frame.data[1]==mid)return; // echo
+      accept(frame.data,frame.size);
+    } else if(!(len==12 && std::memcmp(line,"SEARCHING...",12)==0)) {
+      // Never accept partial counters mixed with NO DATA, transport errors,
+      // malformed bytes or a raw CAN header from a second response block.
+      bad=true;
+    }
   };
   const char *begin=response;
   const char *ptr=response;
@@ -237,7 +249,7 @@ inline bool parseMisfire(const char *response,std::uint8_t cylinder,
     }
   }
   finish();
-  if(bad){out={};return false;}
+  if(bad || out.conflict){out={};return false;}
   return out.hasEwma||out.hasCurrent;
 }
 } // namespace obd_isotp

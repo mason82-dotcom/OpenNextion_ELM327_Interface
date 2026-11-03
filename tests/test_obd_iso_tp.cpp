@@ -1,6 +1,8 @@
 #include "ObdIsoTp.h"
 #include <cassert>
 #include <cstring>
+#include <string>
+#include <initializer_list>
 using obd_diag::DtcEncoding;
 int main(){
   // Existing headerless short CAN answer remains compatible.
@@ -103,5 +105,15 @@ int main(){
   assert(!obd_isotp::parseMisfire(
       "013\r0:46A20B240004\r1:00000010A20C24\r2:00020000001000",2,m)); // other MID
   assert(!obd_isotp::parseMisfire("NO DATA",1,m));
+  for(const char *error:{"NO DATA","BUFFER FULL","CAN ERROR","46 A2 0B 24 GG",
+                         "7E8 06 46 A2 0B 24 00 04"}) {
+    const auto mixed=std::string("46 A2 0B 24 00 04 00 00 FF FF\n")+error;
+    assert(!obd_isotp::parseMisfire(mixed.c_str(),1,m));
+    assert(!m.hasEwma && !m.hasCurrent);
+  }
+  assert(!obd_isotp::parseMisfire(
+      "46 A2 0B 24 00 04 00 00 FF FF\n46 A2 0B 24 00 05 00 00 FF FF",1,m));
+  assert(obd_isotp::parseMisfire(
+      "46 A2 0B 24 00 04 00 00 FF FF\n46 A2 0B 24 00 04 00 00 FF FF",1,m));
   return 0;
 }

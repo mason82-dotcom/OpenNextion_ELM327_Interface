@@ -1,10 +1,10 @@
 #pragma once
 // VEHICLE PROFILE ONLY; keep the separate LAB configuration unchanged.
 // Copy to Config.h locally; NEVER commit the resulting file.
-// User-confirmed WiFi settings; empty password means an open WLAN.
-#define ELM_WIFI_SSID "WiFi_OBDII"
+// SSID/password must match the original dongle; no credentials are known here.
+// Empty password is correct ONLY for a confirmed open dongle WLAN.
+#define ELM_WIFI_SSID "YOUR_ELM327_WIFI_SSID"
 #define ELM_WIFI_PASSWORD ""
-// Unverified defaults: the WiFi name does not confirm adapter IP or port.
+// Original Android project's TCP endpoint (not an HTTP login).
 #define ELM_HOST "192.168.0.10"
 #define ELM_PORT 35000
-

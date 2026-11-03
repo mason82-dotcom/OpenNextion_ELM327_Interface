@@ -21,6 +21,13 @@ struct Io {
 int main(){
   {
     Io io;Transaction t;
+    assert(t.begin(io,Command::StoredDtcs,0,100));
+    io.rx=std::string(1025,'\1')+">";
+    while(t.pending())t.poll(io,1);
+    assert(t.state()==State::Overflow && !io.online && std::strlen(t.reply())==0);
+  }
+  {
+    Io io;Transaction t;
     assert(!t.begin(io,static_cast<Command>(255),0,100));
     assert(t.state()==State::Rejected && io.sent.empty() && !t.writeAttempted());
     t.reset();assert(!t.begin(io,Command::StoredDtcs,0,0));

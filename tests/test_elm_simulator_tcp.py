@@ -109,9 +109,9 @@ class SimulatorTcpTest(unittest.TestCase):
         self.assertEqual(exchange(self.sock, "04"), "?\r>")
         self.assertEqual(exchange(self.sock, "ATDPN"), "A0\r>")
         self.assertEqual(exchange(self.sock, "0100"),
-                         "SEARCHING...\r41 00 9F BB 80 01\r>")
+                         "SEARCHING...\r41 00 9F BF 80 03\r>")
         self.assertEqual(exchange(self.sock, "ATDPN"), "A6\r>")
-        self.assertEqual(exchange(self.sock, "0100"), "41 00 9F BB 80 01\r>")
+        self.assertEqual(exchange(self.sock, "0100"), "41 00 9F BF 80 03\r>")
         self.assertEqual(exchange(self.sock, "ATSP0"), "OK\r>")
         self.assertEqual(exchange(self.sock, "ATDPN"), "A0\r>")
 
