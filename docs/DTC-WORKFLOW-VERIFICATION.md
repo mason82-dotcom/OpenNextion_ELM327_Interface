@@ -1,5 +1,8 @@
 # DTC-Bedienablauf: gezielte Verifikation
 
+Für die inzwischen verfügbaren gezielten Transportfehler und die wiederverwendbare
+Ergebnisvorlage siehe [DTC-LAB-Runbook](DTC-LAB-RUNBOOK.md).
+
 Ausgangsbasis: Entwicklungsbranch `feature/elm327-android-function-port-20261011`,
 Commit `4ba925443f83f29de18b7ce5ac9bc0c7e9f647ad`. `main` enthält zu diesem
 Prüfzeitpunkt nur eine README; PR #1 und der darauf aufbauende PR #2 sind Drafts.
@@ -93,3 +96,4 @@ nach Neustart; irreführende Interpretation generischer OBD-DTCs.
 Nächster benötigter Nachweis: ein zeitgestempeltes LAB-Protokoll der neuen
 Firmware mit Commit-ID, OBD_TX-Zeilen und sichtbaren Lade-/Abbruch-/Reconnect-
 Zuständen. Die Sichtbarkeits- und Latenzkriterien bleiben bis dahin offen.
+

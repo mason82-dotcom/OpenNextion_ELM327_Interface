@@ -65,6 +65,34 @@ DTC_FIXTURES = {
     },
 }
 
+# Fixed local transport scenarios, never arbitrary responses or destinations.
+DTC_TRANSPORT_FIXTURES = {
+    f"{action}_{mode}": (action, mode)
+    for action in ("DELAY", "NO_PROMPT", "DISCONNECT")
+    for mode in ("03", "07", "0A")
+}
+DTC_PROMPT_DELAY_SECONDS = 2.0  # below the firmware's 3.5 s DTC timeout
+
+
+def dtc_transport_from_file(path: str | None, command: str) -> str | None:
+    """Inspect at most 65 bytes; only nine named DTC transport fixtures exist.
+
+    The selector is persistent until changed/removed. It never affects adapter
+    setup or live PIDs and does not re-arm a scan on the ESP32 after reconnect.
+    """
+    if not path or command not in ("03", "07", "0A"):
+        return None
+    try:
+        with open(path, "rb") as source:
+            raw = source.read(65)
+        if len(raw) > 64:
+            return None
+        value = raw.decode("ascii").strip().upper()
+    except (OSError, UnicodeError):
+        return None
+    scenario = DTC_TRANSPORT_FIXTURES.get(value)
+    return scenario[0] if scenario and scenario[1] == command else None
+
 
 def answer_for(command: str, fault_pid: str | None = None, rpm_override: int | None = None,
                dtc_fixture: str | None = None) -> str:
@@ -161,6 +189,7 @@ class ElmCrHandler(socketserver.BaseRequestHandler):
     def handle(self):
         self.request.settimeout(35)
         echo = True
+        missing_prompt = False
         protocol = ProtocolSearch()
         buf = bytearray()
         peer = self.client_address[0]
@@ -179,10 +208,16 @@ class ElmCrHandler(socketserver.BaseRequestHandler):
                         buf.clear()
                         if not cmd:
                             continue
+                        if missing_prompt:
+                            # Also covers pipelined commands in the same recv.
+                            print("[LAB] REJECT request after withheld DTC prompt", flush=True)
+                            return
                         print(f"[LAB] RX {cmd}", flush=True)
                         fault_pid = fault_pid_from_file(self.server.fault_file)
                         rpm_override = rpm_from_file(self.server.rpm_file)
                         fixture = dtc_fixture_from_file(self.server.dtc_file)
+                        transport = dtc_transport_from_file(
+                            getattr(self.server, "dtc_transport_file", None), cmd)
                         reply = protocol.respond(
                             cmd, answer_for(cmd, fault_pid, rpm_override, fixture),
                             getattr(self.server, "search_delay", 0.0))
@@ -192,11 +227,23 @@ class ElmCrHandler(socketserver.BaseRequestHandler):
                             print(f"[LAB] INJECT NO DATA {cmd} (TCP remains open)", flush=True)
                         if reply == "?":
                             print(f"[LAB] REJECT {cmd}", flush=True)
+                        if transport:
+                            print(f"[LAB] DTC TRANSPORT {transport} for {cmd}", flush=True)
+                        if transport == "DISCONNECT":
+                            return
                         reply_delay = getattr(self.server, "reply_delay", 0.0)
                         if reply_delay > 0:
                             time.sleep(reply_delay)
-                        payload = ((cmd + "\r") if echo else "") + reply + "\r>"
-                        self.request.sendall(payload.encode("ascii"))
+                        payload = ((cmd + "\r") if echo else "") + reply + "\r"
+                        if transport in ("DELAY", "NO_PROMPT"):
+                            self.request.sendall(payload.encode("ascii"))
+                            if transport == "DELAY":
+                                time.sleep(DTC_PROMPT_DELAY_SECONDS)
+                                self.request.sendall(b">")
+                            else:
+                                missing_prompt = True
+                        else:
+                            self.request.sendall((payload + ">").encode("ascii"))
                         if cmd == "ATZ":
                             echo = True
                         elif cmd == "ATE0":
@@ -205,6 +252,8 @@ class ElmCrHandler(socketserver.BaseRequestHandler):
                         buf.append(ch)
                     else:
                         print("[LAB] oversize command rejected", flush=True)
+                        if missing_prompt:
+                            return
                         self.request.sendall(b"?\r>")
                         buf.clear()
         except (TimeoutError, ConnectionError, OSError):
@@ -258,6 +307,9 @@ def main():
                         help="optional local file with simulated RPM from 0..7000 (no vehicle access)")
     parser.add_argument("--dtc-file", default=None,
                         help="optional local DTC fixture selector: MULTI, TWO, TRUNCATED, BAD_SEQUENCE")
+    parser.add_argument("--dtc-transport-file", default=None,
+                        help="optional persistent LAB selector: DELAY_03, NO_PROMPT_07, "
+                             "DISCONNECT_0A (each action supports 03/07/0A)")
     parser.add_argument("--search-delay", type=float, default=1.5,
                         help="seconds the first OBD request takes after ATZ/ATSP0 (ATSP0 protocol search)")
     parser.add_argument("--reply-delay", type=float, default=0.04,
@@ -271,6 +323,7 @@ def main():
         server.fault_file = args.fault_file
         server.rpm_file = args.rpm_file
         server.dtc_file = args.dtc_file
+        server.dtc_transport_file = args.dtc_transport_file
         server.search_delay = args.search_delay
         server.reply_delay = args.reply_delay
         print(f"[LAB] ELM327 simulator listening on {args.bind}:{args.port}", flush=True)
@@ -280,6 +333,8 @@ def main():
             print("[LAB] RPM fixture override enabled (inactive until file exists)", flush=True)
         if server.dtc_file:
             print("[LAB] DTC fixture selector enabled (inactive until file exists)", flush=True)
+        if server.dtc_transport_file:
+            print("[LAB] DTC transport fixtures enabled; persistent until selector removed", flush=True)
         print("[LAB] No vehicle/OBD adapter required; Ctrl+C to stop", flush=True)
         try:
             server.serve_forever(poll_interval=0.2)
@@ -289,3 +344,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
