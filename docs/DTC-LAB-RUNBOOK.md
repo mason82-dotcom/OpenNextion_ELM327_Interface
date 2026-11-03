@@ -104,6 +104,12 @@ im stehenden Fahrzeug planen. Standard-OBD ersetzt keine ABS-/ESP-Diagnose.
 
 ## Wiederverwendbares Ergebnisprotokoll
 
+Vorhandene USB-Mitschnitte lassen sich mit
+`python3 tools/audit_obd_tx.py ./lab-serial.txt` offline auf die feste
+Befehls-Allowlist und Zählerlücken prüfen. Aussagegrenzen, JSON-Felder und
+Exit-Codes: [OBD_TX-Audit](OBD-TX-AUDIT.md). Ein PASS dieser Dateiprüfung
+setzt keinen Board-Testfall automatisch auf PASS.
+
 Pro Fall die tatsächliche Beobachtung und Logausschnitte eintragen; ein
 ausgefüllter Erwartungswert ist kein Testergebnis. PASS nur bei beobachteter
 Erfüllung, FAIL bei Abweichung, ansonsten UNBEKANNT.
