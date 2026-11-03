@@ -16,6 +16,7 @@
 #include "ObdPidCatalog.h"
 #include "ObdDiagnostics.h"
 #include "ObdIsoTp.h"
+#include "ObdServiceData.h"
 #include "ObdDtcNames.h"
 #include "FuelTrimTest.h"
 #include "SdLogFormat.h"
@@ -42,6 +43,7 @@
 
 #if OBD_CONNECTED_BUILD
 #include <SD_MMC.h>
+#include "src/ELMo/ELMo.h"
 #endif
 
 using obd_policy::Command;
@@ -80,7 +82,9 @@ static lv_obj_t *sdText;
 static uint32_t tapCount = 0;
 
 #if OBD_CONNECTED_BUILD
-static WiFiClient adapter;
+static ELMo elm;
+// Only socket lifecycle lives here; every command/reply uses ELMo::send().
+static WiFiClient &adapter = elm.client;
 static uint32_t lastAttempt = 0, lastCommandDone = 0;
 static bool adapterReady = false, dtcScanRequested = false;
 static int rpm = -1, coolantC = -1000, speedKph = -1;
@@ -92,6 +96,11 @@ static uint32_t lastExtraRefresh = 0;
 static obd_diag::DtcEncoding dtcEncoding = obd_diag::DtcEncoding::Unknown;
 static bool inspectionRequested = false, misfireRequested = false;
 static uint8_t inspectionStep = 0, misfireStep = 0;
+static uint32_t inspectionInfoMask = 0, inspectionFreezeMask = 0;
+static bool inspectionFreezeAvailable = false;
+static uint32_t misfireMids[6] = {};
+static uint8_t misfireDiscoveryStep = 0;
+static bool misfireMidsReady = false;
 static String inspectionReport, misfireReport;
 static uint8_t dtcIndex = 0;
 // transact() keeps LVGL alive, so touch callbacks can start, replace or
@@ -450,6 +459,9 @@ static void onInspectionButton(lv_event_t *event) {
   inspectionRequested=true; misfireRequested=false; dtcScanRequested=false;
   ++diagGeneration;
   inspectionStep=0;
+  inspectionInfoMask=inspectionFreezeMask=0;
+  inspectionFreezeAvailable=false;
+  inspectionReport+="Profil: "+String(VEHICLE.name)+"\n";
 #else
   lv_label_set_text(inspectionText,"Offline: keine ECU-Daten");
 #endif
@@ -470,6 +482,9 @@ static void onMode06Button(lv_event_t *event) {
   misfireRequested=true; inspectionRequested=false; dtcScanRequested=false;
   ++diagGeneration;
   misfireStep=0;
+  misfireDiscoveryStep=0;
+  misfireMidsReady=false;
+  for(auto &mask:misfireMids) mask=0;
 #else
   lv_label_set_text(misfireText,"Offline: keine ECU-Daten");
 #endif
@@ -672,44 +687,24 @@ static bool transact(Command command, String &answer, uint32_t timeoutMs = CMD_T
   // Bytes before our request are not an answer to it (late reply, banner).
   // Drop them and count them, so a desync is visible on the INFO page.
   if (adapter.available()) {
-    while (adapter.available()) adapter.read();
     ++inputErrorCount;
+    unsigned dropped = 0;
+    while (adapter.available() && dropped < 1024) { adapter.read(); ++dropped; }
+    if (adapter.available()) { adapter.stop(); return false; }
   }
-  // One write = one TCP segment. Two small writes ("010C" + CR) let Nagle
-  // hold the CR until the dongle ACKs, which with delayed ACK costs ~200 ms.
-  char frame[12];
-  const int frameLen = snprintf(frame, sizeof frame, "%s\r", wire);
-  if (frameLen <= 0 || frameLen >= (int)sizeof frame) return false;
-  adapter.write((const uint8_t *)frame, (size_t)frameLen);
   ++txCount;
   // Audit only static allowlisted commands: no credentials or raw responses.
   Serial.printf("OBD_TX,%lu,%lu,%s\n", (unsigned long)millis(),
                 (unsigned long)txCount, wire);
-  answer = "";
-  answer.reserve(64);
-  uint32_t start = millis();
-  while (millis() - start < timeoutMs) {
-    uiTick();
-    while (adapter.available()) {
-      char c = (char)adapter.read();
-      if (c == '>') {
-        lastLatencyMs = millis() - start;
-        return true;
-      }
-      if (answer.length() >= 1024) {
-        ++inputErrorCount;
-        adapter.stop();
-        return false;
-      }
-      if (c == '\r' || c == '\n') answer += '\n';
-      else if (c >= 32 && c <= 126) answer += c;
-    }
-    if (!adapter.connected()) break;
-    delay(2);
+  const uint32_t start = millis();
+  if (elm.send(wire, answer, timeoutMs, uiTick)) {
+    lastLatencyMs = millis() - start;
+    return true;
   }
-  // Missing prompt = unsynchronized stream. NEVER send next command on it.
-  ++timeoutCount;
-  adapter.stop();
+  // ELMo closes the stream on incomplete/oversized replies and short writes.
+  if (elm.lastStatus() == ELMo::Status::Timeout ||
+      elm.lastStatus() == ELMo::Status::Disconnected) ++timeoutCount;
+  else ++inputErrorCount;
   return false;
 }
 
@@ -758,6 +753,11 @@ static void markDisconnected(const char *reason) {
   if(trimReportText)lv_label_set_text(trimReportText,
       "Vorherige Messung ungueltig. Vollstaendig neu starten.");
   dtcIndex = inspectionStep = misfireStep = 0;
+  inspectionInfoMask=inspectionFreezeMask=0;
+  inspectionFreezeAvailable=false;
+  misfireDiscoveryStep=0;
+  misfireMidsReady=false;
+  for(auto &mask:misfireMids) mask=0;
   ++diagGeneration;
   inspectionReport = "";
   misfireReport = "";
@@ -811,6 +811,8 @@ static bool initAdapter() {
   uiTick(); // render the hint before the blocking TCP connect
   if (!adapter.connect(ELM_HOST, ELM_PORT, ADAPTER_CONNECT_TIMEOUT_MS)) return false;
   adapter.setNoDelay(true);
+  // Deliberately no elm.initialize(): our typed sequence below enforces the
+  // LAB identity gate before 0100, and sets ATL0/ATS0/ATH0 explicitly.
   const Command setup[] = {
       Command::AdapterReset, Command::AdapterEchoOff, Command::AdapterLinesOff,
       Command::AdapterSpacesOff, Command::AdapterHeadersOff, Command::AdapterAutoProtocol};
@@ -1159,8 +1161,23 @@ static void scanInspectionStep() {
   static const Command commands[] = {
       Command::Readiness,Command::MilDistance,Command::Warmups,
       Command::ClearDistance,Command::FreezeDtc,Command::StoredDtcs,
-      Command::PendingDtcs,Command::PermanentDtcs};
-  if (inspectionStep>=8) {inspectionRequested=false;return;}
+      Command::PendingDtcs,Command::PermanentDtcs,
+      Command::VehicleInfoSupport,Command::VehicleVin,Command::FreezeSupport,
+      Command::FreezeLoad,Command::FreezeCoolant,Command::FreezeRpm,
+      Command::FreezeSpeed,Command::FreezeStft1,Command::FreezeLtft1,
+      Command::FreezeStft2,Command::FreezeLtft2,Command::FreezeMaf,
+      Command::FreezeMap,Command::FreezeIntake,Command::FreezeThrottle,
+      Command::FreezeTiming};
+  constexpr uint8_t steps=sizeof commands/sizeof commands[0];
+  auto advance=[&]() {
+    ++inspectionStep;
+    if(inspectionStep>=steps) {
+      inspectionReport+="OBD-Vorabcheck beendet. Keine amtliche HU/AU-Freigabe.\n";
+      inspectionRequested=false;
+    }
+    lv_label_set_text(inspectionText,inspectionReport.c_str());
+  };
+  if (inspectionStep>=steps) {inspectionRequested=false;return;}
   if (inspectionStep<=3) {
     // Mode 01 steps: only ask for PIDs the ECU announced in 0100/0120.
     static const uint8_t stepPids[]={0x01,0x21,0x30,0x31};
@@ -1168,10 +1185,31 @@ static void scanInspectionStep() {
         "Readiness","km mit MIL","Warmlaeufe nach Reset","km nach Reset"};
     if (!pidSupported(stepPids[inspectionStep])) {
       inspectionReport+=String(stepNames[inspectionStep])+": von ECU nicht unterstuetzt\n";
-      lv_label_set_text(inspectionText,inspectionReport.c_str());
-      ++inspectionStep;
+      advance();
       return;
     }
+  }
+  if(inspectionStep==8 && dtcEncoding!=obd_diag::DtcEncoding::Can) {
+    inspectionReport+="FIN: CAN-Format erforderlich, nicht abgefragt\n";
+    advance(); return;
+  }
+  if(inspectionStep==9 && !(inspectionInfoMask & 0x40000000UL)) {
+    inspectionReport+="FIN: Unterstuetzung nicht bestaetigt\n";
+    advance(); return;
+  }
+  if(inspectionStep==10 && !inspectionFreezeAvailable) {
+    inspectionReport+="Kein verwertbarer Freeze-Frame-DTC: Snapshot nicht abgefragt\n";
+    // No freeze PID queries without a nonzero, unambiguous stored DTC.
+    inspectionStep=steps-1;
+    advance(); return;
+  }
+  static const uint8_t freezePids[]={
+      0x04,0x05,0x0C,0x0D,0x06,0x07,0x08,0x09,0x10,0x0B,0x0F,0x11,0x0E};
+  if(inspectionStep>=11 &&
+      !(inspectionFreezeMask & (1UL<<(32-freezePids[inspectionStep-11])))) {
+    const auto &item=obd_pids::catalog[obd_pids::indexOf(freezePids[inspectionStep-11])];
+    inspectionReport+="FF "+String(item.title)+": nicht unterstuetzt / n/v\n";
+    advance(); return;
   }
   const Command c=commands[inspectionStep];
   String response;
@@ -1215,13 +1253,15 @@ static void scanInspectionStep() {
       inspectionReport+=String(labels[inspectionStep-1])+": "+String(v)+"\n";
     } else inspectionReport+=String(labels[inspectionStep-1])+": n/v\n";
   } else if (inspectionStep==4) {
-    if (obd_response::readFreezeFrame00(response.c_str(),0x02,data,2)) {
+    inspectionFreezeAvailable=false;
+    if (obd_service::freeze(response.c_str(),0x02,data,2)) {
       if (data[0]!=0 || data[1]!=0) {
+        inspectionFreezeAvailable=true;
         char code[6];obd_diag::decodeDtc(data[0],data[1],code);
         inspectionReport+="Freeze-Frame DTC: "+String(code)+"\n";
       } else inspectionReport+="Freeze-Frame DTC: keiner\n";
     } else inspectionReport+="Freeze-Frame DTC: n/v\n";
-  } else {
+  } else if(inspectionStep<=7) {
     const char *labels[]={"Gespeichert","Pending","Permanent"};
     const uint8_t modes[]={0x43,0x47,0x4A};
     const uint8_t i=inspectionStep-5;
@@ -1233,14 +1273,30 @@ static void scanInspectionStep() {
       for (std::size_t c=0;c<dtcs.count && c<8;++c)
         inspectionReport+="  "+String(dtcs.entries[c].code)+"\n";
     }
+  } else if(inspectionStep==8) {
+    if(!obd_service::bitmap(response.c_str(),0x49,0,inspectionInfoMask))
+      inspectionReport+="Mode 09: Unterstuetzung nicht sicher lesbar\n";
+  } else if(inspectionStep==9) {
+    char vin[18];
+    inspectionReport+=obd_service::vin(response.c_str(),vin)
+        ? "FIN: "+String(vin)+"\n" : String("FIN: nicht sicher lesbar\n");
+    // FIN stays in this manual display report; no Serial/SD VIN record.
+  } else if(inspectionStep==10) {
+    inspectionReport+="FREEZE FRAME 00 (gespeicherte Werte):\n";
+    if(!obd_service::freezeBitmap(response.c_str(),inspectionFreezeMask))
+      inspectionReport+="Snapshot-Unterstuetzung nicht sicher lesbar\n";
+  } else {
+    const uint8_t pid=freezePids[inspectionStep-11];
+    const auto &item=obd_pids::catalog[obd_pids::indexOf(pid)];
+    const uint8_t count=obd_pids::bytesNeeded(item.formula);
+    double value;
+    inspectionReport+="FF "+String(item.title)+": ";
+    if(obd_service::freeze(response.c_str(),pid,data,count) &&
+        obd_pids::decode(item,data,count,value))
+      inspectionReport+=trimNumber(value,item.decimals)+" "+item.unit+"\n";
+    else inspectionReport+="nicht sicher lesbar\n";
   }
-  lv_label_set_text(inspectionText,inspectionReport.c_str());
-  ++inspectionStep;
-  if (inspectionStep>=8) {
-    inspectionReport+="OBD-Vorabcheck beendet. Keine amtliche HU/AU-Freigabe.\n";
-    lv_label_set_text(inspectionText,inspectionReport.c_str());
-    inspectionRequested=false;
-  }
+  advance();
 }
 
 static void scanMisfireStep() {
@@ -1256,11 +1312,38 @@ static void scanMisfireStep() {
     misfireRequested=false;
     return;
   }
+  const uint32_t generation=diagGeneration;
+  if(!misfireMidsReady) {
+    static const Command queries[]={
+        Command::SupportedMids00,Command::SupportedMids20,Command::SupportedMids40,
+        Command::SupportedMids60,Command::SupportedMids80,Command::SupportedMidsA0};
+    String supported;
+    if(!transact(queries[misfireDiscoveryStep],supported,3500)) {
+      markDisconnected("Mode06: MID-Erkennung unterbrochen");
+      misfireRequested=false; return;
+    }
+    if(generation!=diagGeneration)return;
+    const uint8_t base=misfireDiscoveryStep*32;
+    if(!obd_service::bitmap(supported.c_str(),0x46,base,misfireMids[misfireDiscoveryStep])) {
+      misfireReport+="MID-Unterstuetzung nicht sicher lesbar; keine Zylinderabfragen.\n";
+      lv_label_set_text(misfireText,misfireReport.c_str());
+      misfireRequested=false; return;
+    }
+    ++misfireDiscoveryStep;
+    misfireMidsReady=misfireDiscoveryStep==6 || !(misfireMids[misfireDiscoveryStep-1]&1);
+    return;
+  }
+  const uint8_t requestedMid=0xA2+misfireStep;
+  if(!obd_service::supported(requestedMid,misfireMids,6)) {
+    misfireReport+="Zyl. "+String(misfireStep+1)+": MID nicht unterstuetzt\n";
+    lv_label_set_text(misfireText,misfireReport.c_str());
+    if(++misfireStep>=VEHICLE.cylinders) misfireRequested=false;
+    return;
+  }
   static const Command modes[]={
       Command::MisfireCyl1,Command::MisfireCyl2,Command::MisfireCyl3,
       Command::MisfireCyl4,Command::MisfireCyl5,Command::MisfireCyl6};
   String reply;
-  const uint32_t generation=diagGeneration;
   const uint32_t started=millis();
   if(!transact(modes[misfireStep],reply,3500)){
     markDisconnected("Mode06: Adapter-Synchronisation verloren");

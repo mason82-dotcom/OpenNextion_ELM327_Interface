@@ -8,7 +8,7 @@
 namespace obd_pids {
 enum class Formula : std::uint8_t {
   Rpm, Speed, Temperature, Percent, Pressure, MassAirFlow,
-  FuelTrim, Voltage, EquivalentRatio
+  FuelTrim, Voltage, EquivalentRatio, TimingAdvance, Seconds, CatalystTemperature
 };
 struct Item {
   std::uint8_t pid;
@@ -35,6 +35,12 @@ constexpr Item catalog[] = {
   {0x42, obd_policy::Command::EcuVoltage, "ECU-Spannung", "V", Formula::Voltage, 3, 6000},
   {0x44, obd_policy::Command::LambdaTarget, "Soll-Lambda", "lambda", Formula::EquivalentRatio, 3, 1600},
   {0x33, obd_policy::Command::Baro, "Umgebungsdruck", "kPa", Formula::Pressure, 0, 6500},
+  {0x0E, obd_policy::Command::TimingAdvance, "Zuendwinkel Zyl1", "deg", Formula::TimingAdvance, 1, 2500},
+  {0x1F, obd_policy::Command::EngineRuntime, "Motorlaufzeit", "s", Formula::Seconds, 0, 10000},
+  {0x2E, obd_policy::Command::EvapPurge, "Tankentlueftung Soll", "%", Formula::Percent, 1, 6500},
+  {0x2F, obd_policy::Command::FuelLevel, "Tankfuellstand", "%", Formula::Percent, 1, 30000},
+  {0x3C, obd_policy::Command::CatalystB1, "Kat B1 S1 (ECU)", "C", Formula::CatalystTemperature, 1, 10000},
+  {0x3D, obd_policy::Command::CatalystB2, "Kat B2 S1 (ECU)", "C", Formula::CatalystTemperature, 1, 10000},
 };
 constexpr std::size_t count = sizeof(catalog)/sizeof(catalog[0]);
 constexpr int bytesNeeded(Formula f) {
@@ -42,7 +48,9 @@ constexpr int bytesNeeded(Formula f) {
     case Formula::Rpm:
     case Formula::MassAirFlow:
     case Formula::Voltage:
-    case Formula::EquivalentRatio: return 2;
+    case Formula::EquivalentRatio:
+    case Formula::Seconds:
+    case Formula::CatalystTemperature: return 2;
     default: return 1;
   }
 }
@@ -61,6 +69,9 @@ inline bool decode(const Item &item, const std::uint8_t *bytes,
     case Formula::FuelTrim: out = (a-128.0)*100.0/128.0; break;
     case Formula::Voltage: out = (256*a+b)/1000.0; break;
     case Formula::EquivalentRatio: out = (256*a+b)/32768.0; break;
+    case Formula::TimingAdvance: out = a/2.0-64.0; break;
+    case Formula::Seconds: out = 256*a+b; break;
+    case Formula::CatalystTemperature: out = (256*a+b)/10.0-40.0; break;
   }
   return true;
 }

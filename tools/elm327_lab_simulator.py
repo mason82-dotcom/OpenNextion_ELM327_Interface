@@ -9,8 +9,8 @@ from pathlib import Path
 
 # Standard Mode 01 supported PIDs: 05 coolant, 0C RPM, 0D speed.
 RESPONSES = {
-    "0100": "41 00 9F BB 80 01",  # 01/04/05/06/07/08/09/0B/0C/0D/0F/10/11/20
-    "0120": "41 20 80 01 A0 01",  # 21/30/31/33/40
+    "0100": "41 00 9F BF 80 03",  # includes timing 0E, runtime 1F
+    "0120": "41 20 80 07 A0 19",  # includes purge 2E, fuel 2F, cats 3C/3D
     "0140": "41 40 50 00 00 00",  # 42/44
     "0101": "41 01 00 07 25 00",  # MIL off, 0 DTC, monitors complete
     "0104": "41 04 4C",           # 29.8% load
@@ -32,6 +32,35 @@ RESPONSES = {
     "0105": "41 05 82",       # 90 C
     "010C": "41 0C 13 48",    # 1234 rpm
     "010D": "41 0D 00",       # 0 km/h
+    "010E": "41 0E 96",       # synthetic: 11 deg before TDC, cylinder 1
+    "011F": "41 1F 01 2C",    # synthetic: 300 seconds since start
+    "012E": "41 2E 40",       # synthetic commanded purge: 25.1%
+    "012F": "41 2F 80",       # synthetic fuel level: 50.2%
+    "013C": "41 3C 1B 58",    # synthetic ECU catalyst B1 S1: 660 C
+    "013D": "41 3D 1A F4",    # synthetic ECU catalyst B2 S1: 650 C
+    "0600": "46 00 00 00 00 01",  # synthetic MID support chain
+    "0620": "46 20 00 00 00 01",
+    "0640": "46 40 00 00 00 01",
+    "0660": "46 60 00 00 00 01",
+    "0680": "46 80 00 00 00 01",
+    "06A0": "46 A0 7E 00 00 00",  # A2-A7, no assertion about a real M272 ECU
+    "0900": "49 00 40 00 00 00",
+    "0902": "014\r0:49 02 01 57 44 44\r1:32 30 34 32 35 36 31\r"
+            "2:46 31 32 33 34 35 36",  # synthetic WDD2042561F123456, not an owner VIN
+    "020000": "42 00 00 5F BF 80 00",  # DTC 02 plus synthetic frame-00 PIDs
+    "020400": "42 04 00 4C",
+    "020500": "42 05 00 82",
+    "020C00": "42 0C 00 13 48",
+    "020D00": "42 0D 00 00",
+    "020600": "42 06 00 80",
+    "020700": "42 07 00 8A",
+    "020800": "42 08 00 80",
+    "020900": "42 09 00 87",
+    "021000": "42 10 00 01 F4",
+    "020B00": "42 0B 00 28",
+    "020F00": "42 0F 00 46",
+    "021100": "42 11 00 20",
+    "020E00": "42 0E 00 96",
     "06A2": "013\r0:46 A2 0B 24 00 00\r1:00 00 00 10 A2 0C 24\r"
              "2:00 00 00 00 00 10 00",  # real CAN: 19 bytes, padded
     "06A3": "013\r0:46 A3 0B 24 00 00\r1:00 00 00 10 A3 0C 24\r"
@@ -125,6 +154,8 @@ def answer_for(command: str, fault_pid: str | None = None, rpm_override: int | N
         return f"41 0C {(raw >> 8) & 0xFF:02X} {raw & 0xFF:02X}"
     if dtc_fixture in DTC_FIXTURES and command in ("03", "07", "0A"):
         return DTC_FIXTURES[dtc_fixture][command]
+    if command == "020200" and dtc_fixture in ("MULTI", "TWO", "PADDED"):
+        return "42 02 00 01 71"  # synthetic freeze frame caused by P0171
     if command in RESPONSES:
         return RESPONSES[command]
     return "?"

@@ -24,11 +24,13 @@ struct Profile {
 inline constexpr Profile active{
     "Generisch OBD-II", 6, 2, 3, 7000, 500, 1200, ExpectedBus::Any, false};
 #else
-// Mercedes-Benz C350 (W204), M272 V6 3.5 l, build year 2008.
-// Bank 1 = cylinders 1-3, bank 2 = cylinders 4-6. Warm idle about 600-700
-// rpm; the window below is deliberately wider (cold start, A/C load).
+// Mercedes-Benz C350 Estate (S204), rear-wheel drive confirmed by owner.
+// Type 204.256, M272.961, 3498 cm3, 200 kW; model year 2008.
+// Manufacturer reference: docs/M272-S204-DIAGNOSTICS.md.
+// Bank 1 = cylinders 1-3, bank 2 = cylinders 4-6.
+// Idle window is an application heuristic, not a Mercedes service limit.
 inline constexpr Profile active{
-    "MB C350 W204 M272 (2008)", 6, 2, 3, 7000, 550, 1000, ExpectedBus::Can,
+    "C350 S204 M272.961 (2008)", 6, 2, 3, 7000, 550, 1000, ExpectedBus::Can,
     true};
 #endif
 

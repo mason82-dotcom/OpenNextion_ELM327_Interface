@@ -113,6 +113,7 @@ inline DtcResult parseDtcs(const char *text, std::uint8_t responseMode,
 struct Misfire {
   bool hasEwma=false, hasCurrent=false;
   std::uint16_t ewma=0,current=0;
+  bool conflict=false;
 };
 // Mode 06 only: MID A2-A7, TID 0B/0C, UASID 24=raw counts.
 // Works on one complete, headerless response message (single line or an
@@ -123,8 +124,14 @@ inline void accumulateMisfire(const std::uint8_t *data, std::size_t size,
   for(std::size_t i=1;i+8<size;i+=9){
     if(data[i]!=mid || data[i+2]!=0x24)continue;
     std::uint16_t value=(std::uint16_t(data[i+3])<<8)|data[i+4];
-    if(data[i+1]==0x0B){out.ewma=value;out.hasEwma=true;}
-    if(data[i+1]==0x0C){out.current=value;out.hasCurrent=true;}
+    if(data[i+1]==0x0B){
+      if(out.hasEwma && out.ewma!=value)out.conflict=true;
+      out.ewma=value;out.hasEwma=true;
+    }
+    if(data[i+1]==0x0C){
+      if(out.hasCurrent && out.current!=value)out.conflict=true;
+      out.current=value;out.hasCurrent=true;
+    }
   }
 }
 // Single-line variant. NOTE: on CAN a Mode 06 reply is >= 10 bytes and thus
@@ -136,6 +143,7 @@ inline bool parseMisfire(const char *response,std::uint8_t cylinder,Misfire &out
   obd_response::forEachLineFrame(response,[&](const obd_response::Frame &f){
     accumulateMisfire(f.data,f.size,mid,out);
   });
+  if(out.conflict){out={};return false;}
   return out.hasEwma||out.hasCurrent;
 }
 inline const char *m272Hint(const char *code) {

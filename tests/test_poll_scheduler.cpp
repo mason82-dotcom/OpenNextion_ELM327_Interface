@@ -6,7 +6,7 @@
 using namespace obd_pids;
 
 // Lab simulator bitmaps: every catalog PID is supported.
-static const std::uint32_t ALL[3] = {0x9FBB8001u, 0x8001A001u, 0x50000000u};
+static const std::uint32_t ALL[3] = {0x9FBF8003u, 0x8007A019u, 0x50000000u};
 
 struct Run {
   unsigned polls[count] = {};
@@ -62,21 +62,24 @@ int main() {
     }
     assert(r.polls[rpm] >= 100 && r.polls[rpm] <= 120);   // ~2 Hz
     assert(r.polls[coolant] >= 11 && r.polls[coolant] <= 14);
-    assert(r.total >= 450 && r.total <= 560);             // ~8-9/s, capped
+    double ideal=0;
+    for(const auto &item:catalog) ideal+=60000.0/item.intervalMs;
+    assert(r.total >= ideal*0.8 && r.total <= ideal+count);
   }
 
-  // Medium load (150 ms/request): the most overdue PID wins, so RPM is not
-  // diluted to the round-robin share of slow PIDs (old scheduler: 43/min).
+  // Medium load (150 ms/request): with 21 PIDs the link is overloaded.
+  // RPM must get at least twice a simple round-robin share of requests.
   {
     const Run r = simulate(1000, 60000, 150, ALL);
-    assert(r.polls[rpm] >= 48);
+    assert(r.polls[rpm] >= 2*(r.total/count));
   }
 
   // Overloaded slow adapter (K-line/KWP): nothing starves, RPM leads.
   {
     const Run r = simulate(1000, 60000, 300, ALL);
     for (std::size_t i = 0; i < count; ++i) {
-      assert(r.polls[i] >= 3);
+      const unsigned requested=60000u/catalog[i].intervalMs;
+      assert(r.polls[i] >= (requested<3 ? requested : 3));
       assert(r.maxGap[i] <= catalog[i].intervalMs + count * 325u);
       assert(r.polls[rpm] >= r.polls[i]);
     }

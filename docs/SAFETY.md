@@ -1,10 +1,12 @@
-# Sicherheitskonzept v0.1
+# Sicherheitskonzept: aktueller Read-only-Stand
 
 ## Garantieumfang / Grenzen
 
 **Ziel:** Keine Fahrzeug-Codierung, keine DTC-Löschung, keine Stellgliedansteuerung und keine beliebigen Rohframes. Dieses Ziel wird durch eine geschlossene Allowlist der *Firmware* abgesichert. Es ist keine Aussage über das Innenleben eines ELM327-Klons oder eine Garantie für jedes Steuergerät.
 
-- Nur Anfragen: Mode 01/PIDs 00, 05, 0C, 0D; Mode 03, 07, 0A.
+- Nur feste Anfragen aus `ReadOnlyPolicy.h`: ausgewählte Mode-01-PIDs,
+  explizit aufgelistete Mode-02-PIDs mit Frame 00, Mode 03/07/0A, Mode-06-
+  Unterstützungsbitmaps und MIDs A2–A7 sowie ausschließlich Mode 09 PIDs 00/02.
 - Mode 04 (Löschen), Mode 08 (Stellgliedtests), UDS 10/11/14/27/2E/2F/31/34–37 und beliebige CAN-Nachrichten sind **nicht implementiert**.
 - Kein Terminal, keine vom Benutzer eingegebenen AT-Kommandos, keine CAN-Header-Umschaltung (ATSH/ATCRA usw.).
 - ELM327-Adapterinitialisierung: ATZ/ATE0/ATL0/ATS0/ATH0/ATSP0. Diese ändern die Arbeitsweise des **Adapters**, nicht das Steuergeräte-Coding.
@@ -25,11 +27,18 @@
 
 Fahrzeug-Schreibzugriffe dürfen **niemals** durch bloßes Aktivieren einer UI-Option freigegeben werden. Eine künftige Schreibvariante benötigt gesonderte Firmware-/Build-Profile, separate Tests, eine ausdrückliche Bestätigung je Operation und nachvollziehbare Risiken pro Fahrzeug-/Steuergerätetyp. Read-only bleibt die unveränderte Standardeinstellung.
 
-## Bekannte Lücken des Prototyps
+## Grenzen des aktuellen Prototyps
 
-- Keine belastbare ISO-TP-/Multi-ECU-DTC-Dekodierung.
-- Statusanzeige zeigt lediglich die jüngste DTC-Rohantwort, vollständige 03/07/0A-Antworten am USB-Serial.
-- Keine SD-Protokollierung; Serial-Ausgabe ist keine dauerhafte Datenaufzeichnung.
-- PID-Parser ist ein Minimalparser ohne ausführliche Antwortnormalisierung; fehlende Daten nicht als 0 interpretieren.
+- ISO-TP nur im begrenzten ATH0-Indexformat; keine ECU-Adresszuordnung und
+  keine Reassemblierung ineinander verschachtelter ECU-Ströme.
+- FIN-Abfrage nur im eindeutig dekodierbaren CAN-Format. Die FIN erscheint
+  im manuellen HU/AU-Bericht, ohne neue FIN-Zeilen auf Serial oder SD.
+- Freeze-Frame-Werte nur nach einem eindeutigen, von null verschiedenen
+  Freeze-Frame-DTC und positivem eigenen Mode-02-Unterstützungsbit.
+- Mode-06-Aussetzer nur nach positiver CAN-MID-Unterstützung und UASID 0x24.
+  Gemischte Transportfehler oder widersprüchliche Zähler ergeben nicht verfügbar.
+- SD-Logging ist optional und hat weiterhin keine RTC-Zeitstempel.
+- Fehlende/mehrdeutige Messwerte ergeben n/v statt 0. Echte ECU-Unterstützung
+  und Adapterformat müssen am konkreten Fahrzeug bestätigt werden.
 - UI ruft Netzwerktransaktionen synchron ab; höhere Last kann Touch/Grafik verzögern.
 - Keine Fahrzeug-Werkstattdiagnose oder zertifizierte Prüffunktion.
