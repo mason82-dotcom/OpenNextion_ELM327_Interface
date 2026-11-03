@@ -52,6 +52,17 @@ inline std::size_t pidRow(char *out, std::size_t size, std::uint32_t ms,
       static_cast<unsigned long>(latencyMs)), size);
 }
 
+// Mode 06 monitor result, same columns as a PID row: "06A2" in the pid
+// column, label names cylinder and counter ("Zyl1 EWMA"), raw counts.
+inline std::size_t mode06Row(char *out, std::size_t size, std::uint32_t ms,
+                             std::uint8_t mid, const char *label,
+                             std::uint16_t value, std::uint32_t latencyMs) {
+  if (!out || size == 0 || !csvSafe(label)) return 0;
+  return finish(std::snprintf(out, size, "%lu,06%02X,%s,%u,count,%lu\n",
+      static_cast<unsigned long>(ms), static_cast<unsigned>(mid), label,
+      static_cast<unsigned>(value), static_cast<unsigned long>(latencyMs)), size);
+}
+
 // mode: "03", "07" or "0A"; code: decoded DTC such as "P0171".
 inline std::size_t dtcRow(char *out, std::size_t size, std::uint32_t ms,
                           const char *mode, const char *code) {

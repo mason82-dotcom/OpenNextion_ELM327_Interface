@@ -15,7 +15,7 @@ Eigenständiger OBD-II-Monitor auf dem **OpenNextion ONX3248G035** (ESP32-S3, 3,
 - **v0.2:** Getrennter Touch-Test und manuelle DTC-Schaltfläche: Seitenwechsel/Touch-Test lösen keine OBD-Abfragen aus. 
 - **v0.2:** WLAN-/ELM-Verbindungsanzeige und TX-/Timeout-/Antwortpuffer-Zähler (am Pi-Simulator bestätigt; echter Adapter nicht geprüft).
 - Gespeicherte (03), ausstehende (07) und permanente (0A) DTCs **zunächst als rohe Adapterantwort**, noch ohne vollständigen Multi-ECU-/ISO-TP-Dekoder.
-- Diagnose-Protokollzeilen über USB-Serial und (v0.3, im Verbindungsmodus) als CSV auf MicroSD: `/obd/S####_P##.csv`, eine Datei pro Sitzung, neue Teildatei ab 4 MB, Schreibpuffer jede Sekunde auf die Karte, Status auf der INFO-Seite. Noch keine Uhrzeit (keine RTC): Zeilen tragen Millisekunden seit Start.
+- Diagnose-Protokollzeilen über USB-Serial und (v0.3, im Verbindungsmodus) als CSV auf MicroSD: `/obd/S####_P##.csv`, Mode-06-Aussetzerzähler mit `pid`=`06A2`…`06A7`, eine Datei pro Sitzung, neue Teildatei ab 4 MB, Schreibpuffer jede Sekunde auf die Karte, Status auf der INFO-Seite. Noch keine Uhrzeit (keine RTC): Zeilen tragen Millisekunden seit Start.
 - Zentrale, geschlossene Allowlist; keine Mode 04/08, keine UDS-Schreibdienste, keine frei eingebbaren CAN-/ELM-Befehle, kein Terminal.
 
 ## Sicherheit
@@ -74,6 +74,17 @@ des Fotos waren 175 Befehle bei 0 Timeouts und 0 Pufferfehlern gezählt.
 Das Serverprotokoll zeigt zyklische Leseanfragen `010C`, `0105`, `010D`
 sowie einmal `03`, `07`, `0A`. Das ist **kein Fahrzeugtest** und
 ersetzt keine Prüfung an einem echten ELM327-Adapter.
+
+**Bestätigter Pi-WLAN-Labortest (2026-11-03, Stand `f22c914`):** Lab-Build
+auf dem Pi 5 (76 Tests OK, `BUILD OK`, 41 % Flash, 37 % RAM) geflasht.
+Seriell: `OBD: profile MB C350 W204 M272 (2008)`, `CAN=1`, keine
+`PROFILE_WARN`. Mode-01-Polling stabil mit 46–60 ms Antwortzeit pro
+Anfrage (ein TCP-Segment, Nagle aus), keine Timeouts oder Reconnects.
+MODE 06: `06A2`–`06A7` gesendet (je ca. 80 ms) und alle sechs
+**Mehrframe**-Antworten dekodiert, Display zeigt Zyl. 1–3 B1 und Zyl. 4–6 B2
+mit EWMA/Zyklus. **Nicht geprüft:** DTC-Padding (≥3 Codes) und alles am
+echten ELM327/Fahrzeug. Ab dieser Version schreibt Mode 06 zusätzlich
+`CSV`-Zeilen (`ms,06A2,Zyl1 EWMA,0,count,latency`) auf Serial und SD.
 
 **UI-Nachbesserung (nach Laborfoto, noch einmal am Board zu prüfen):**
 Die größeren Messwertkarten zeigen dynamisch nur `1234 rpm`, `90 C`,

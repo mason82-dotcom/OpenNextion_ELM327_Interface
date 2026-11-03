@@ -1250,6 +1250,8 @@ static void scanMisfireStep() {
   if(dtcEncoding!=obd_diag::DtcEncoding::Can){
     misfireReport+="Kein CAN-Protokoll (ATDPN): Mode 06 Aussetzer\n"
                    "nur bei ISO 15765 definiert. Nichts gesendet.\n";
+    Serial.println("MODE06_SKIPPED,no CAN protocol");
+    sdEvent("Mode06 uebersprungen: kein CAN-Protokoll");
     lv_label_set_text(misfireText,misfireReport.c_str());
     misfireRequested=false;
     return;
@@ -1259,6 +1261,7 @@ static void scanMisfireStep() {
       Command::MisfireCyl4,Command::MisfireCyl5,Command::MisfireCyl6};
   String reply;
   const uint32_t generation=diagGeneration;
+  const uint32_t started=millis();
   if(!transact(modes[misfireStep],reply,3500)){
     markDisconnected("Mode06: Adapter-Synchronisation verloren");
     misfireRequested=false;return;
@@ -1267,10 +1270,31 @@ static void scanMisfireStep() {
   obd_diag::Misfire m;
   const uint8_t cyl=misfireStep+1;
   misfireReport+="Zyl. "+String(cyl)+" (B"+String(obd_vehicle::bankOf(VEHICLE,cyl))+"): ";
+  const uint8_t mid=static_cast<uint8_t>(0xA1+cyl);
   if(obd_isotp::parseMisfire(reply.c_str(),cyl,m)) {
     misfireReport+="EWMA "+String(m.hasEwma ? String(m.ewma) : String("--"));
     misfireReport+=" / Zyklus "+String(m.hasCurrent ? String(m.current) : String("--"));
-  } else misfireReport+="nicht verfuegbar (UASID24)";
+    // Same CSV columns as PID rows; raw counts, no interpretation.
+    const uint32_t sampledAt=millis();
+    const uint32_t latency=sampledAt-started;
+    const struct {bool ok;const char *kind;uint16_t value;} rows[]={
+        {m.hasEwma,"EWMA",m.ewma},{m.hasCurrent,"Zyklus",m.current}};
+    for(const auto &r:rows){
+      if(!r.ok)continue;
+      char label[24],row[96];
+      snprintf(label,sizeof label,"Zyl%u %s",(unsigned)cyl,r.kind);
+      Serial.printf("CSV,%lu,06%02X,%s,%u,count,%lu\n",(unsigned long)sampledAt,
+                    (unsigned)mid,label,(unsigned)r.value,(unsigned long)latency);
+      sdWrite(row,obd_log::mode06Row(row,sizeof row,sampledAt,mid,label,
+                                     r.value,latency));
+    }
+  } else {
+    misfireReport+="nicht verfuegbar (UASID24)";
+    Serial.printf("MODE06_UNAVAILABLE,06%02X\n",(unsigned)mid);
+    char event[48];
+    snprintf(event,sizeof event,"Mode06 06%02X nicht verfuegbar",(unsigned)mid);
+    sdEvent(event);
+  }
   misfireReport+="\n";
   lv_label_set_text(misfireText,misfireReport.c_str());
   ++misfireStep;
