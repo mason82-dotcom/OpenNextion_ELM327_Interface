@@ -33,6 +33,8 @@ jobs:
           /tmp/obd-poll-scheduler-test
           g++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/ObdDisplay tests/test_sd_log_format.cpp -o /tmp/obd-sd-log-test
           /tmp/obd-sd-log-test
+          g++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/ObdDisplay tests/test_vehicle_profile.cpp -o /tmp/obd-vehicle-profile-test
+          /tmp/obd-vehicle-profile-test
           python3 -m unittest discover -s tests -p 'test_*.py' -v
 
   firmware:

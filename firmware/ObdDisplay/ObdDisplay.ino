@@ -19,6 +19,7 @@
 #include "ObdDtcNames.h"
 #include "FuelTrimTest.h"
 #include "SdLogFormat.h"
+#include "VehicleProfile.h"
 
 #if defined(OBD_LAB_BUILD)
 #if __has_include("Config.h")
@@ -44,6 +45,7 @@
 #endif
 
 using obd_policy::Command;
+static constexpr const obd_vehicle::Profile &VEHICLE = obd_vehicle::active;
 static constexpr uint32_t LCD_SPI_HZ = 80000000;
 static constexpr uint32_t WIFI_RETRY_MS = 12000;
 // Pause after the ELM '>' prompt before the next request. The request rate
@@ -508,7 +510,8 @@ static void buildUi() {
 #if defined(OBD_LAB_BUILD)
   label(pages[0], "LAB: Testdaten", 12, 260, 148, MUTED);
 #elif OBD_CONNECTED_BUILD
-  label(pages[0], "OBD-Livewerte", 12, 260, 148, MUTED);
+  label(pages[0], VEHICLE.bus == obd_vehicle::ExpectedBus::Any ?
+        "OBD-Livewerte" : "Profil: C350 M272", 12, 260, 148, MUTED);
 #else
   label(pages[0], "Offline-Modus", 12, 260, 148, MUTED);
 #endif
@@ -532,7 +535,7 @@ static void buildUi() {
   lv_chart_set_type(rpmChart, LV_CHART_TYPE_LINE);
   lv_chart_set_div_line_count(rpmChart, 7, 5);
   lv_chart_set_point_count(rpmChart, 48);
-  lv_chart_set_range(rpmChart, LV_CHART_AXIS_PRIMARY_Y, 0, 7000);
+  lv_chart_set_range(rpmChart, LV_CHART_AXIS_PRIMARY_Y, 0, VEHICLE.chartMaxRpm);
   lv_chart_set_update_mode(rpmChart, LV_CHART_UPDATE_MODE_SHIFT);
   lv_obj_set_style_size(rpmChart, 0, LV_PART_INDICATOR);
   rpmSeries = lv_chart_add_series(rpmChart, lv_color_hex(0x53D7CF), LV_CHART_AXIS_PRIMARY_Y);
@@ -666,13 +669,24 @@ static void uiTick() {
 static bool transact(Command command, String &answer, uint32_t timeoutMs = CMD_TIMEOUT_MS) {
   const char *wire = obd_policy::wireCommand(command);
   if (!adapter.connected() || wire == nullptr || !obd_policy::allowedWire(command)) return false;
-  adapter.print(wire);
-  adapter.write('\r');
+  // Bytes before our request are not an answer to it (late reply, banner).
+  // Drop them and count them, so a desync is visible on the INFO page.
+  if (adapter.available()) {
+    while (adapter.available()) adapter.read();
+    ++inputErrorCount;
+  }
+  // One write = one TCP segment. Two small writes ("010C" + CR) let Nagle
+  // hold the CR until the dongle ACKs, which with delayed ACK costs ~200 ms.
+  char frame[12];
+  const int frameLen = snprintf(frame, sizeof frame, "%s\r", wire);
+  if (frameLen <= 0 || frameLen >= (int)sizeof frame) return false;
+  adapter.write((const uint8_t *)frame, (size_t)frameLen);
   ++txCount;
   // Audit only static allowlisted commands: no credentials or raw responses.
   Serial.printf("OBD_TX,%lu,%lu,%s\n", (unsigned long)millis(),
                 (unsigned long)txCount, wire);
   answer = "";
+  answer.reserve(64);
   uint32_t start = millis();
   while (millis() - start < timeoutMs) {
     uiTick();
@@ -796,6 +810,7 @@ static bool initAdapter() {
 #endif
   uiTick(); // render the hint before the blocking TCP connect
   if (!adapter.connect(ELM_HOST, ELM_PORT, ADAPTER_CONNECT_TIMEOUT_MS)) return false;
+  adapter.setNoDelay(true);
   const Command setup[] = {
       Command::AdapterReset, Command::AdapterEchoOff, Command::AdapterLinesOff,
       Command::AdapterSpacesOff, Command::AdapterHeadersOff, Command::AdapterAutoProtocol};
@@ -840,6 +855,14 @@ static bool initAdapter() {
   else if (proto.length() == 1 && proto[0]>='1' && proto[0]<='5')
     dtcEncoding = obd_diag::DtcEncoding::Legacy;
   else dtcEncoding = obd_diag::DtcEncoding::Unknown;
+  // The profile never forces a protocol; a mismatch is only reported.
+  const bool busOk = obd_vehicle::busMatches(VEHICLE,
+      dtcEncoding == obd_diag::DtcEncoding::Can);
+  if (!busOk) {
+    Serial.printf("PROFILE_WARN,%s expects CAN, ATDPN=%s\n",
+                  VEHICLE.name, response.c_str());
+    sdEvent("profile mismatch: expected CAN");
+  }
   pollScheduler.reset();
   for (std::size_t i=0;i<obd_pids::count;++i) pidValid[i]=false;
   adapterReady = true;
@@ -847,9 +870,11 @@ static bool initAdapter() {
   lv_label_set_text(statusText, "LAB: Pi-Simulator verbunden");
   lv_label_set_text(linkText, "LAB-Simulator: ID bestaetigt");
 #else
-  lv_label_set_text(statusText, "ELM327 verbunden | Mode 01 aktiv");
+  lv_label_set_text(statusText, busOk ? "ELM327 verbunden | Mode 01 aktiv"
+                                      : "WARNUNG: kein CAN, Fahrzeugprofil pruefen");
   lv_label_set_text(linkText, "WLAN / ELM327: verbunden");
 #endif
+  Serial.printf("OBD: profile %s\n", VEHICLE.name);
   Serial.printf("OBD: PIDs 00=%08lX 20=%08lX 40=%08lX CAN=%d\n",
        (unsigned long)pidMasks[0],(unsigned long)pidMasks[1],
        (unsigned long)pidMasks[2],dtcEncoding==obd_diag::DtcEncoding::Can);
@@ -1027,7 +1052,9 @@ static void pollOnePid() {
     lv_chart_set_next_value(rpmChart,rpmSeries,rpm);
     if (engineStateText)
       lv_label_set_text(engineStateText,
-        rpm==0 ? "KOEO: Motor aus" : "KOER: Motor laeuft");
+        rpm==0 ? "KOEO: Motor aus" :
+        obd_vehicle::idlePlausible(VEHICLE,rpm) ? "KOER: Leerlauf" :
+                                                  "KOER: Motor laeuft");
   } else if (p.pid==0x05) {
     coolantC=(int)value;
     lv_label_set_text_fmt(coolantText, "%d C", coolantC);
@@ -1076,7 +1103,7 @@ static void scanOneDtcMode() {
       const char *description=obd_dtc_names::describe(code);
       if(description)dtcReport+=": "+String(description);
       dtcReport+="\n";
-      const char *hint=obd_diag::m272Hint(code);
+      const char *hint=VEHICLE.m272Hints ? obd_diag::m272Hint(code) : nullptr;
       if(hint)dtcReport+="  Hinweis: "+String(hint)+"\n";
     }
     dtcReport+="\n";
@@ -1217,7 +1244,16 @@ static void scanInspectionStep() {
 }
 
 static void scanMisfireStep() {
-  if(misfireStep>=6){misfireRequested=false;return;}
+  if(misfireStep>=VEHICLE.cylinders){misfireRequested=false;return;}
+  // MID/TID/UASID records exist only on ISO 15765 (CAN). On K-line/KWP the
+  // same bytes mean a legacy Test ID, so do not send and do not guess.
+  if(dtcEncoding!=obd_diag::DtcEncoding::Can){
+    misfireReport+="Kein CAN-Protokoll (ATDPN): Mode 06 Aussetzer\n"
+                   "nur bei ISO 15765 definiert. Nichts gesendet.\n";
+    lv_label_set_text(misfireText,misfireReport.c_str());
+    misfireRequested=false;
+    return;
+  }
   static const Command modes[]={
       Command::MisfireCyl1,Command::MisfireCyl2,Command::MisfireCyl3,
       Command::MisfireCyl4,Command::MisfireCyl5,Command::MisfireCyl6};
@@ -1230,15 +1266,15 @@ static void scanMisfireStep() {
   if(generation!=diagGeneration)return; // superseded during transact
   obd_diag::Misfire m;
   const uint8_t cyl=misfireStep+1;
-  misfireReport+="Zyl. "+String(cyl)+" (B"+String(cyl<=3?1:2)+"): ";
-  if(obd_diag::parseMisfire(reply.c_str(),cyl,m)) {
+  misfireReport+="Zyl. "+String(cyl)+" (B"+String(obd_vehicle::bankOf(VEHICLE,cyl))+"): ";
+  if(obd_isotp::parseMisfire(reply.c_str(),cyl,m)) {
     misfireReport+="EWMA "+String(m.hasEwma ? String(m.ewma) : String("--"));
     misfireReport+=" / Zyklus "+String(m.hasCurrent ? String(m.current) : String("--"));
   } else misfireReport+="nicht verfuegbar (UASID24)";
   misfireReport+="\n";
   lv_label_set_text(misfireText,misfireReport.c_str());
   ++misfireStep;
-  if(misfireStep>=6){
+  if(misfireStep>=VEHICLE.cylinders){
     misfireReport+="Nur SAE Mode06. Keine Stellgliedpruefung.\n";
     lv_label_set_text(misfireText,misfireReport.c_str());
     misfireRequested=false;

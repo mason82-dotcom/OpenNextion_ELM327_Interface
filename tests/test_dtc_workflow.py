@@ -21,6 +21,7 @@ PRELUDE = r'''
 #include <cassert>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdint>
 #include <cstring>
 #include <deque>
 #include <functional>
@@ -30,7 +31,9 @@ PRELUDE = r'''
 #include "ReadOnlyPolicy.h"
 #include "ObdIsoTp.h"
 #include "ObdDtcNames.h"
+#include "VehicleProfile.h"
 using obd_policy::Command;
+static constexpr const obd_vehicle::Profile &VEHICLE=obd_vehicle::active;
 class String {
   std::string s;
 public:
@@ -40,6 +43,7 @@ public:
   String(unsigned long v):s(std::to_string(v)){}
   const char *c_str() const {return s.c_str();}
   size_t length() const {return s.size();}
+  void reserve(size_t n){s.reserve(n);}
   String substring(size_t a,size_t b) const {return s.substr(a,b-a);}
   void replace(char a,char b){for(auto &c:s)if(c==a)c=b;}
   void trim(){auto a=s.find_first_not_of(" \r\n\t");
@@ -85,9 +89,11 @@ struct AdapterDouble {
   std::vector<std::string> sent;
   std::string rx;
   bool connected(){return online;}
-  void print(const char *s){assert(rx.empty());sent.emplace_back(s);
-    if(!replies.empty()){rx=replies.front();replies.pop_front();}}
-  void write(char c){assert(c=='\r');}
+  size_t write(const uint8_t *b,size_t n){
+    assert(rx.empty()&&n>1&&b[n-1]=='\r');
+    sent.emplace_back(reinterpret_cast<const char *>(b),n-1);
+    if(!replies.empty()){rx=replies.front();replies.pop_front();}
+    return n;}
   int available(){return static_cast<int>(rx.size());}
   int read(){char c=rx.front();rx.erase(0,1);return c;}
   void stop(){online=false;rx.clear();}

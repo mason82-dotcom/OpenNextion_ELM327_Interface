@@ -71,5 +71,37 @@ int main(){
       "7E8 10 0A 43 04 01 71 03 01\n7E8 21 03 02 03 03",
       0x43,DtcEncoding::Can);
   assert(!wrongHeader.gotAnswer); // ATH1 header bytes unsupported and not guessed.
+  // Real ELM327 (AndrOBD issue #78): first frame 6 bytes, last consecutive
+  // frame printed with ISO-TP padding up to 7 bytes. Must decode.
+  auto padded=obd_isotp::parseDtcs(
+      "00A\r0:43 04 01 71 03 01\r1:03 02 03 03 00 00 00",0x43,DtcEncoding::Can);
+  assert(padded.gotAnswer&&!padded.malformed&&padded.count==4);
+  assert(std::strcmp(padded.entries[3].code,"P0303")==0);
+  auto paddedAA=obd_isotp::parseDtcs(
+      "00A\n0:430401710301\n1:03020303AAAAAA",0x43,DtcEncoding::Can);
+  assert(paddedAA.gotAnswer&&!paddedAA.malformed&&paddedAA.count==4);
+  // Padding never tolerated on a partial frame or after completion.
+  const char *badPadding[]={
+    "00A\n0:430401710301\n1:0302030300",          // 5 bytes: not a full frame
+    "00A\n0:430401710301\n1:03020303000000\n2:00", // segment after completion
+    "004\n0:43010174000000",                       // padding on first frame
+  };
+  for(const auto *raw:badPadding){
+    auto v=obd_isotp::parseDtcs(raw,0x43,DtcEncoding::Can);
+    assert(v.malformed);
+  }
+  // Mode 06: two TIDs = 19 bytes, always multiframe on CAN.
+  obd_diag::Misfire m;
+  assert(obd_isotp::parseMisfire(
+      "013\r0:46A20B240004\r1:00000010A20C24\r2:00020000001000",1,m));
+  assert(m.hasEwma&&m.ewma==4&&m.hasCurrent&&m.current==2);
+  assert(!obd_isotp::parseMisfire(
+      "013\r0:46A20B240004\r1:00000010A20C24",1,m)); // truncated
+  assert(!obd_isotp::parseMisfire(
+      "013\r0:46A20B240004\r1:00000010A20C24\r2:0002",1,m)); // short last
+  assert(obd_isotp::parseMisfire("46 A2 0B 24 00 04 00 00 00 10",1,m)); // single line
+  assert(!obd_isotp::parseMisfire(
+      "013\r0:46A20B240004\r1:00000010A20C24\r2:00020000001000",2,m)); // other MID
+  assert(!obd_isotp::parseMisfire("NO DATA",1,m));
   return 0;
 }

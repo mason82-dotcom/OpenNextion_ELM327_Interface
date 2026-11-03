@@ -34,7 +34,8 @@ class DtcIsoTpIntegrationTest(unittest.TestCase):
             "result.malformed=true",
             "size>=7",
             "count>64",
-            "used!=expected",
+            "used==expected",  # Assembler::complete(): exact length
+            "n==7",  # padding only on a full consecutive frame
             "encoding!=obd_diag::DtcEncoding::Can",
         ):
             self.assertIn(phrase, DTC)

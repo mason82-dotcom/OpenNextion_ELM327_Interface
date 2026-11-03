@@ -53,6 +53,50 @@ inline void absorb(obd_diag::DtcResult &dest,
   }
 }
 
+// Bounded reassembly of one ELM ATH0/CAF1 indexed message ("00A", "0:..",
+// "1:.."). Real adapters print the last consecutive frame UNTRIMMED: e.g.
+// "00A / 0:470401180122 / 1:02232610000000" (10 bytes + 3 padding bytes).
+// Extra bytes are accepted only on a full 7-byte consecutive frame (index
+// != 0) that completes the message, i.e. the CAN frame padding of
+// ISO 15765-2. Any shorter overrun stays malformed.
+struct Assembler {
+  std::uint8_t message[64]={};
+  std::size_t used=0, expected=0;
+  unsigned nextIndex=0;
+  bool active=false;
+  void reset(){active=false;used=expected=0;nextIndex=0;}
+  bool begin(int count){
+    reset();
+    if(count<2 || count>64)return false;
+    active=true;expected=static_cast<std::size_t>(count);
+    return true;
+  }
+  bool complete() const {return active && used>0 && used==expected;}
+  // line points at "<idx>:<payload>"; returns false when malformed.
+  bool segment(const char *line,std::size_t len){
+    if(!active)return false;
+    const int idx=obd_response::hexNibble(line[0]);
+    if(idx<0 || unsigned(idx)!=nextIndex || used>=expected){reset();return false;}
+    std::uint8_t data[7]={};std::size_t n=0;
+    if(!segmentBody(line+2,len-2,data,n)){reset();return false;}
+    const std::size_t remaining=expected-used;
+    if(n>remaining){
+      const bool paddedLastFrame = idx!=0 || used!=0;
+      if(!(paddedLastFrame && n==7)){reset();return false;}
+      n=remaining; // drop ISO-TP frame padding, never data
+    }
+    std::memcpy(message+used,data,n);
+    used+=n;
+    nextIndex=(nextIndex+1)&0x0F;
+    return true;
+  }
+};
+inline int lengthOf(const char *line){
+  return (obd_response::hexNibble(line[0])<<8) |
+         (obd_response::hexNibble(line[1])<<4) |
+          obd_response::hexNibble(line[2]);
+}
+
 // Preserves the prior strict handling for headerless single-line CAN or
 // Legacy replies. Adds ELM's *already formatted* indexed multiframe style.
 // This does not send AT commands or alter adapter protocol configuration.
@@ -65,31 +109,28 @@ inline obd_diag::DtcResult parseDtcs(const char *response,
   if(encoding!=obd_diag::DtcEncoding::Can)
     return obd_diag::parseDtcs(response,mode,encoding);
 
-  std::uint8_t message[64]={};
-  std::size_t used=0, expected=0;
-  unsigned nextIndex=0;
-  bool assembling=false;
+  Assembler asm_;
   bool sawNoData=false;
   auto finish=[&]() {
-    if(!assembling)return;
-    if(used!=expected || used==0){
+    if(!asm_.active)return;
+    if(!asm_.complete()){
       result.malformed=true;
     }else{
       char plain[64*3+1]={};
       // Existing validated DTC CAN decoder expects complete bytes.
       std::size_t p=0;
       static constexpr char digits[]="0123456789ABCDEF";
-      for(std::size_t i=0;i<used;++i){
+      for(std::size_t i=0;i<asm_.used;++i){
         if(i)plain[p++]=' ';
-        plain[p++]=digits[message[i]>>4];
-        plain[p++]=digits[message[i]&0x0F];
+        plain[p++]=digits[asm_.message[i]>>4];
+        plain[p++]=digits[asm_.message[i]&0x0F];
       }
       plain[p]='\0';
       const auto r=obd_diag::parseDtcs(plain,mode,encoding);
       if(!r.gotAnswer)result.malformed=true;
       absorb(result,r);
     }
-    assembling=false;used=expected=0;nextIndex=0;
+    asm_.reset();
   };
   auto parseLine=[&](const char *line,std::size_t len) {
     while(len && (line[len-1]==' '||line[len-1]=='\t'))--len;
@@ -97,27 +138,11 @@ inline obd_diag::DtcResult parseDtcs(const char *response,
     if(!len)return;
     if(isLengthLine(line,len)){
       finish();
-      const int count=(obd_response::hexNibble(line[0])<<8) |
-          (obd_response::hexNibble(line[1])<<4) |
-           obd_response::hexNibble(line[2]);
-      if(count<2 || count>64){result.malformed=true;return;}
-      assembling=true;expected=static_cast<std::size_t>(count);
-      used=0;nextIndex=0;
+      if(!asm_.begin(lengthOf(line)))result.malformed=true;
       return;
     }
     if(isIndexedLine(line,len)){
-      if(!assembling){result.malformed=true;return;}
-      const int idx=obd_response::hexNibble(line[0]);
-      if(idx<0 || unsigned(idx)!=nextIndex || used>=expected){
-        result.malformed=true;assembling=false;return;
-      }
-      std::uint8_t data[7]={};std::size_t n=0;
-      if(!segmentBody(line+2,len-2,data,n) || n>expected-used){
-        result.malformed=true;assembling=false;return;
-      }
-      std::memcpy(message+used,data,n);
-      used+=n;
-      nextIndex=(nextIndex+1)&0x0F;
+      if(!asm_.segment(line,len))result.malformed=true;
       return;
     }
     finish();
@@ -163,5 +188,56 @@ inline obd_diag::DtcResult parseDtcs(const char *response,
   // but is not by itself malformed. Mixed partial success is incomplete.
   if(sawNoData && result.gotAnswer)result.malformed=true;
   return result;
+}
+
+// Mode 06 misfire counters (MID A2-A7) from a headerless CAN reply.
+// A single MID with TID 0B+0C is 19 bytes, so real ISO 15765 adapters always
+// answer in the indexed multiframe format. Any malformed or transport error
+// line yields "not available"; nothing is guessed.
+inline bool parseMisfire(const char *response,std::uint8_t cylinder,
+                         obd_diag::Misfire &out){
+  out={};
+  if(!response || cylinder<1 || cylinder>6)return false;
+  const std::uint8_t mid=std::uint8_t(0xA1+cylinder);
+  Assembler asm_;
+  bool bad=false;
+  auto finish=[&](){
+    if(!asm_.active)return;
+    if(asm_.complete())
+      obd_diag::accumulateMisfire(asm_.message,asm_.used,mid,out);
+    else bad=true;
+    asm_.reset();
+  };
+  auto parseLine=[&](const char *line,std::size_t len){
+    while(len && (line[len-1]==' '||line[len-1]=='\t'))--len;
+    while(len && (*line==' '||*line=='\t')){++line;--len;}
+    if(!len)return;
+    if(isLengthLine(line,len)){
+      finish();
+      if(!asm_.begin(lengthOf(line)))bad=true;
+      return;
+    }
+    if(isIndexedLine(line,len)){
+      if(!asm_.segment(line,len))bad=true;
+      return;
+    }
+    finish();
+    obd_response::Frame frame;
+    if(obd_response::decodeLine(line,len,frame))
+      obd_diag::accumulateMisfire(frame.data,frame.size,mid,out);
+  };
+  const char *begin=response;
+  const char *ptr=response;
+  for(std::size_t total=0;total<=1024;++total,++ptr){
+    if(total==1024 || *ptr=='\0' || *ptr=='\n' || *ptr=='\r'){
+      parseLine(begin,static_cast<std::size_t>(ptr-begin));
+      if(total==1024){bad=true;break;}
+      if(*ptr=='\0')break;
+      begin=ptr+1;
+    }
+  }
+  finish();
+  if(bad){out={};return false;}
+  return out.hasEwma||out.hasCurrent;
 }
 } // namespace obd_isotp
