@@ -1,5 +1,8 @@
 # DTC-LAB: reproduzierbare Transportfehler und Prüfprotokoll
 
+Für die inkrementelle DTC-Empfangsstufe und deren zusätzliche UI-Prüfschritte
+siehe [DTC-Async-Empfang](DTC-ASYNC-RECEIVE.md).
+
 Priorität: die praktische Abnahme der DTC-Bedienung vorbereiten. Die bereits
 gemergten UI-Korrekturen werden nicht neu implementiert. Die Firmware und ihre
 Befehls-Allowlist werden durch diese Simulator-Erweiterung nicht geändert.
@@ -136,3 +139,4 @@ begrenzten ATH0-Parsers. Das Befehlsprotokoll allein belegt keine UI-Reaktion.
 **Nächster benötigter Nachweis:** ein ausgefüllter LAB-Lauf dieser Prüffolge
 mit Firmware-Commit, OBD_TX-Zeilen, passender Simulator-Störungszeile und
 sichtbarem Abbruch-/Reconnect-Verhalten. Bis dahin keine neue Hardwareabnahme.
+

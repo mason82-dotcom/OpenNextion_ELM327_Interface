@@ -85,7 +85,6 @@ class DtcScanSummaryTest(unittest.TestCase):
 class ScanGenerationTest(unittest.TestCase):
     def test_every_scan_step_discards_superseded_replies(self):
         for start, end in (
-            ("static void scanOneDtcMode()", "static void scanInspectionStep()"),
             ("static void scanInspectionStep()", "static void scanMisfireStep()"),
             ("static void scanMisfireStep()", "#endif // OBD_CONNECTED_BUILD"),
         ):
@@ -99,6 +98,13 @@ class ScanGenerationTest(unittest.TestCase):
                 self.assertLess(send, guard)
                 # The guard must precede any use of the reply.
                 self.assertLess(guard, body.index("++", guard))
+
+    def test_async_dtc_discards_cancelled_generation_before_publishing(self):
+        body = section("static void scanOneDtcMode()", "static void scanInspectionStep()")
+        self.assertIn("dtcTransactionGeneration=diagGeneration;", body)
+        guard = body.index("dtcTransactionGeneration!=diagGeneration || !dtcScanRequested")
+        self.assertLess(guard, body.index('Serial.printf("DTC_RAW'))
+        self.assertLess(body.index("if (transport.pending()) return;"), guard)
 
     def test_ui_actions_that_change_scans_bump_generation(self):
         for start, end in (
@@ -114,3 +120,4 @@ class ScanGenerationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
