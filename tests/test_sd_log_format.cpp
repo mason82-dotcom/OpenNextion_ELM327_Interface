@@ -11,17 +11,19 @@ int main() {
   // Header: source marker, session/part, column line.
   std::size_t n = header(buf, sizeof buf, "LAB_SIMULATED", 12, 1);
   assert(n == std::strlen(buf));
-  assert(std::strstr(buf, "source=LAB_SIMULATED,session=12,part=1"));
-  assert(std::strstr(buf, "\nms,pid,label,value,unit,latency_ms\n"));
+  assert(std::strstr(buf, "source=LAB_SIMULATED,session=12,part=1,time=millis_since_boot+utc"));
+  assert(std::strstr(buf, "\nms,pid,label,value,unit,latency_ms,utc\n"));
   assert(header(buf, sizeof buf, "BAD,SOURCE", 1, 1) == 0);
 
   // PID row matches the existing USB "CSV," serial format minus the prefix.
   n = pidRow(buf, sizeof buf, 123456, 0x0C, "Drehzahl", 1234.0, 0, "rpm", 41);
-  assert(n && std::strcmp(buf, "123456,010C,Drehzahl,1234,rpm,41\n") == 0);
+  assert(n && std::strcmp(buf, "123456,010C,Drehzahl,1234,rpm,41,\n") == 0);
   pidRow(buf, sizeof buf, 7, 0x42, "ECU-Spannung", 13.5, 3, "V", 50);
-  assert(std::strcmp(buf, "7,0142,ECU-Spannung,13.500,V,50\n") == 0);
-  pidRow(buf, sizeof buf, 7, 0x07, "LTFT B1", 7.8125, 1, "%", 9);
-  assert(std::strcmp(buf, "7,0107,LTFT B1,7.8,%,9\n") == 0);
+  assert(std::strcmp(buf, "7,0142,ECU-Spannung,13.500,V,50,\n") == 0);
+  pidRow(buf, sizeof buf, 7, 0x07, "LTFT B1", 7.8125, 1, "%", 9,
+         "2026-10-11T10:52:03.007Z");
+  assert(std::strcmp(buf, "7,0107,LTFT B1,7.8,%,9,2026-10-11T10:52:03.007Z\n") == 0);
+  assert(pidRow(buf, sizeof buf, 7, 0x07, "LTFT B1", 1.0, 1, "%", 9, "a,b") == 0);
   assert(pidRow(buf, sizeof buf, 1, 0x0C, "Drehzahl", NAN, 0, "rpm", 1) == 0);
   assert(pidRow(buf, sizeof buf, 1, 0x0C, "a,b", 1.0, 0, "rpm", 1) == 0);
   assert(pidRow(buf, 10, 123456, 0x0C, "Drehzahl", 1234.0, 0, "rpm", 41) == 0);
@@ -31,13 +33,18 @@ int main() {
 
   // Mode 06 rows share the PID columns: pid=06MM, unit=count.
   assert(mode06Row(buf, sizeof buf, 493206, 0xA2, "Zyl1 EWMA", 4, 76));
-  assert(std::strcmp(buf, "493206,06A2,Zyl1 EWMA,4,count,76\n") == 0);
+  assert(std::strcmp(buf, "493206,06A2,Zyl1 EWMA,4,count,76,\n") == 0);
   mode06Row(buf, sizeof buf, 9, 0xA7, "Zyl6 Zyklus", 65535, 80);
-  assert(std::strcmp(buf, "9,06A7,Zyl6 Zyklus,65535,count,80\n") == 0);
+  assert(std::strcmp(buf, "9,06A7,Zyl6 Zyklus,65535,count,80,\n") == 0);
+  mode06Row(buf, sizeof buf, 9, 0xA2, "Zyl1 EWMA", 0, 58, "2026-11-03T17:30:00.000Z");
+  assert(std::strcmp(buf, "9,06A2,Zyl1 EWMA,0,count,58,2026-11-03T17:30:00.000Z\n") == 0);
+  assert(mode06Row(buf, sizeof buf, 9, 0xA2, "Zyl1 EWMA", 0, 58, "bad,utc") == 0);
   assert(mode06Row(buf, sizeof buf, 1, 0xA2, "bad,label", 1, 1) == 0);
   assert(mode06Row(buf, 12, 493206, 0xA2, "Zyl1 EWMA", 4, 76) == 0);
   assert(dtcRow(buf, sizeof buf, 99, "03", "P0171"));
-  assert(std::strcmp(buf, "99,03,DTC,P0171,,\n") == 0);
+  assert(std::strcmp(buf, "99,03,DTC,P0171,,,\n") == 0);
+  dtcRow(buf, sizeof buf, 99, "03", "P0171", "2026-10-11T10:52:03.007Z");
+  assert(std::strcmp(buf, "99,03,DTC,P0171,,,2026-10-11T10:52:03.007Z\n") == 0);
   assert(eventRow(buf, sizeof buf, 5, "adapter connected CAN=1"));
   assert(std::strcmp(buf, "# 5 adapter connected CAN=1\n") == 0);
   assert(eventRow(buf, sizeof buf, 5, "bad\nline") == 0);
