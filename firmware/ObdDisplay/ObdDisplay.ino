@@ -48,8 +48,24 @@
 #include <SD_MMC.h>
 #include "src/ELMo/ELMo.h"
 #endif
-#if defined(OBD_LAB_BUILD)
+#if OBD_CONNECTED_BUILD
 #include <esp_sntp.h>
+#endif
+
+// PCF8563 RTC is temporarily disabled: the connected build does not detect it
+// reliably at boot. The clock comes from NTP instead (LAB WLAN, or the
+// boot-time visit to the home WLAN below). Set to 1 to re-enable.
+#define OBD_RTC_ENABLED 0
+
+// Vehicle build: optional boot-time NTP sync over the home WLAN (TIME_WIFI_*
+// in Config.h). It disconnects again before the dongle can be connected.
+#if OBD_CONNECTED_BUILD && !defined(OBD_LAB_BUILD) && defined(TIME_WIFI_SSID)
+#if !defined(TIME_WIFI_PASSWORD)
+#error "Config.h must define TIME_WIFI_PASSWORD together with TIME_WIFI_SSID."
+#endif
+#define OBD_TIME_SYNC 1
+#else
+#define OBD_TIME_SYNC 0
 #endif
 
 using obd_policy::Command;
@@ -84,7 +100,7 @@ static lv_obj_t *pages[9], *navButtons[4], *linkText, *statsText;
 static lv_obj_t *extraDataText, *engineStateText, *inspectionText, *misfireText;
 static lv_obj_t *trimStageText, *trimReportText;
 static lv_obj_t *dtcModeText[3], *dtcDetailText;
-static lv_obj_t *sdText, *clockText;
+static lv_obj_t *sdText, *clockText, *dongleButtonText;
 
 // Wall clock: BLX8563 RTC (UTC) at boot; the LAB build may also set it via
 // NTP on the lab WLAN. The vehicle profile only reads the RTC.
@@ -134,6 +150,12 @@ static uint32_t lastTrimUi=0;
 static obd_trim::Stage lastTrimRenderedStage=obd_trim::Stage::Idle;
 static uint8_t trimPollIndex=0;
 static void cancelTrimForOtherDiagnostic();
+#if OBD_CONNECTED_BUILD
+// The adapter link only starts after an explicit tap on "Dongle verbinden"
+// (LAB: automatically at boot, the simulator is not a vehicle).
+static bool dongleRequested = false;
+static void onDongleButton(lv_event_t *event);
+#endif
 
 // MicroSD CSV log (v0.3). Optional: without a card nothing changes; the
 // first failed write stops logging instead of retrying on a bad card.
@@ -315,8 +337,12 @@ static void clockFromRtc() {
 static void updateClockText() {
   if (!clockText) return;
   if (clockSource == ClockSource::None) {
+#if OBD_RTC_ENABLED
     lv_label_set_text(clockText, rtcPresent ? "Uhr: nicht gestellt"
                                             : "Uhr: kein RTC gefunden");
+#else
+    lv_label_set_text(clockText, "Uhr: nicht gestellt (RTC aus, nur NTP)");
+#endif
     return;
   }
   char iso[32];
@@ -702,9 +728,22 @@ static void buildUi() {
   statsText = label(sysCard, "Keine Diagnosedaten", 10, 62, 274, MUTED);
   label(sysCard, "Feste Read-only-Befehlsfreigabe", 10, 126, 274, 0x53D7CF);
   sdText = label(sysCard, "SD: --", 10, 147, 274, MUTED);
-  lv_obj_t *touchBtn = makeButton(pages[3], "Touch testen", 12, 230, 146, 43);
+  lv_obj_t *dongleBtn = makeButton(pages[3],
+#if OBD_CONNECTED_BUILD
+      "Dongle verbinden",
+#else
+      "Dongle gesperrt",
+#endif
+      12, 230, 146, 43);
+  dongleButtonText = lv_obj_get_child(dongleBtn, 0);
+#if OBD_CONNECTED_BUILD
+  lv_obj_add_event_cb(dongleBtn, onDongleButton, LV_EVENT_CLICKED, nullptr);
+#else
+  lv_obj_add_state(dongleBtn, LV_STATE_DISABLED);
+#endif
+  lv_obj_t *touchBtn = makeButton(pages[3], "Touch: 0", 162, 230, 146, 43);
   lv_obj_add_event_cb(touchBtn, onTouchButton, LV_EVENT_CLICKED, nullptr);
-  touchText = label(pages[3], "Touch: 0", 175, 243, 132, LIGHT);
+  touchText = lv_obj_get_child(touchBtn, 0);
   clockText = label(pages[3], "Uhr: --", 12, 280, 296, MUTED);
   label(pages[3], "Keine Schreib-, Stellglied- oder Loeschfunktion", 12, 307, 290, MUTED);
 
@@ -1530,6 +1569,100 @@ static void scanMisfireStep() {
 }
 #endif // OBD_CONNECTED_BUILD
 
+#if OBD_CONNECTED_BUILD
+
+static bool ntpStarted = false;
+// NTP needs internet: LAB uses the lab WLAN itself; the vehicle build only
+// while it is on the home WLAN at boot, never on the dongle AP.
+static void ntpTick() {
+  if (!ntpStarted) {
+    if (WiFi.status() != WL_CONNECTED) return;
+    configTime(0, 0, "pool.ntp.org", "time.cloudflare.com");
+    ntpStarted = true;
+    return;
+  }
+  if (clockSource == ClockSource::Ntp ||
+      sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED ||
+      time(nullptr) < rtc8563::MIN_VALID_EPOCH) return;
+  clockSource = ClockSource::Ntp;
+  const bool stored = rtcPresent && rtcWrite(time(nullptr));
+  char utc[32], event[80];
+  clockIso(utc, sizeof utc);
+  snprintf(event, sizeof event, "clock set by NTP %s rtc=%s", utc,
+           stored ? "written" : "not written");
+  Serial.printf("CLOCK: %s\n", event);
+  sdEvent(event);
+}
+
+#if OBD_TIME_SYNC
+static constexpr uint32_t TIME_SYNC_TIMEOUT_MS = 30000;
+static bool timeSyncActive = false;
+static uint32_t timeSyncStart = 0;
+
+static void startTimeSync() {
+  WiFi.begin(TIME_WIFI_SSID, TIME_WIFI_PASSWORD);
+  timeSyncActive = true;
+  timeSyncStart = millis();
+  lv_label_set_text(linkText, "Heim-WLAN: hole Uhrzeit (NTP)...");
+  Serial.println("CLOCK: boot time sync via home WLAN");
+}
+
+static void endTimeSync(const char *result) {
+  timeSyncActive = false;
+  if (ntpStarted) esp_sntp_stop();
+  WiFi.disconnect();
+  Serial.printf("CLOCK: %s\n", result);
+  sdEvent(result);
+  if (!dongleRequested)
+    lv_label_set_text(linkText, "ELM327: nicht verbunden\nINFO > Dongle verbinden");
+}
+
+static void timeSyncTick() {
+  if (!timeSyncActive) return;
+  ntpTick();
+  if (clockSource == ClockSource::Ntp) endTimeSync("home WLAN time sync done");
+  else if (millis() - timeSyncStart >= TIME_SYNC_TIMEOUT_MS)
+    endTimeSync("home WLAN time sync timed out");
+}
+#endif
+
+static void startDongle() {
+  dongleRequested = true;
+  WiFi.begin(ELM_WIFI_SSID, ELM_WIFI_PASSWORD);
+  lastAttempt = millis();
+  if (dongleButtonText) lv_label_set_text(dongleButtonText, "Dongle trennen");
+#if defined(OBD_LAB_BUILD)
+  lv_label_set_text(linkText, "Labor-WLAN: verbindet...");
+#else
+  lv_label_set_text(statusText, "WLAN zum ELM327 startet...");
+  lv_label_set_text(linkText, "WLAN: verbindet...");
+  sdEvent("dongle connect requested");
+#endif
+}
+
+static void stopDongle() {
+  markDisconnected("Dongle manuell getrennt");
+  dongleRequested = false;
+  WiFi.disconnect();
+  sdEvent("dongle disconnected by user");
+  lv_label_set_text(dongleButtonText, "Dongle verbinden");
+  lv_label_set_text(statusText, "Dongle getrennt");
+  lv_label_set_text(linkText, "ELM327: nicht verbunden");
+}
+
+static void onDongleButton(lv_event_t *event) {
+  if (lv_event_get_code(event) != LV_EVENT_CLICKED) return;
+  if (dongleRequested) {
+    stopDongle();
+    return;
+  }
+#if OBD_TIME_SYNC
+  if (timeSyncActive) endTimeSync("home WLAN time sync aborted for dongle");
+#endif
+  startDongle();
+}
+#endif // OBD_CONNECTED_BUILD (clock / dongle)
+
 void setup() {
   Serial.begin(115200);
   Wire.begin(NEXTION_IIC_SDA_PIN, NEXTION_IIC_SCL_PIN, 400000);
@@ -1539,7 +1672,9 @@ void setup() {
 #if !OBD_CONNECTED_BUILD || defined(OBD_LAB_BUILD)
   i2cScan();
 #endif
+#if OBD_RTC_ENABLED
   clockFromRtc();
+#endif
   gfx->begin(LCD_SPI_HZ);
   gfx->setRotation(0);
   gfx->fillScreen(RGB565_BLACK);
@@ -1567,16 +1702,18 @@ void setup() {
   // Modem sleep only wakes the radio per DTIM beacon and adds hundreds of
   // ms per request/reply; this display is powered by the vehicle anyway.
   WiFi.setSleep(false);
-  WiFi.begin(ELM_WIFI_SSID, ELM_WIFI_PASSWORD);
-  lastAttempt = millis();
+  WiFi.persistent(false);
 #if defined(OBD_LAB_BUILD)
+  startDongle();
   lv_label_set_text(statusText, "LABOR: Pi-Simulator / kein Fahrzeug");
-  lv_label_set_text(linkText, "Labor-WLAN: verbindet...");
   Serial.println("OBD DIAG: LAB BUILD; SIMULATOR IDENTITY REQUIRED");
 #else
-  lv_label_set_text(statusText, "WLAN zum ELM327 startet...");
-  lv_label_set_text(linkText, "WLAN: verbindet...");
-  Serial.println("OBD DIAG: CONNECTED BUILD; READ-ONLY COMMAND POLICY");
+  lv_label_set_text(statusText, "Dongle: INFO > Dongle verbinden");
+  lv_label_set_text(linkText, "ELM327: nicht verbunden\nINFO > Dongle verbinden");
+#if OBD_TIME_SYNC
+  startTimeSync();
+#endif
+  Serial.println("OBD DIAG: CONNECTED BUILD; READ-ONLY COMMAND POLICY; MANUAL DONGLE CONNECT");
 #endif
 #else
   lv_label_set_text(statusText, "OFFLINE-TEST | WLAN und OBD AUS");
@@ -1587,44 +1724,23 @@ void setup() {
 #endif
 }
 
-#if defined(OBD_LAB_BUILD)
-// LAB only: the lab WLAN has internet; the vehicle dongle AP does not, and
-// the vehicle profile must not talk to anything but the adapter.
-static void labNtpTick() {
-  static bool started = false;
-  if (!started) {
-    if (WiFi.status() != WL_CONNECTED) return;
-    configTime(0, 0, "pool.ntp.org", "time.cloudflare.com");
-    started = true;
-    return;
-  }
-  if (clockSource == ClockSource::Ntp ||
-      sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED ||
-      time(nullptr) < rtc8563::MIN_VALID_EPOCH) return;
-  clockSource = ClockSource::Ntp;
-  const bool stored = rtcPresent && rtcWrite(time(nullptr));
-  char utc[32], event[80];
-  clockIso(utc, sizeof utc);
-  snprintf(event, sizeof event, "clock set by NTP %s rtc=%s", utc,
-           stored ? "written" : "not written");
-  Serial.printf("CLOCK: %s\n", event);
-  sdEvent(event);
-}
-#endif
-
 void loop() {
   uiTick();
   static uint32_t lastClockUi = 0;
   if (millis() - lastClockUi >= 1000) {
     lastClockUi = millis();
 #if defined(OBD_LAB_BUILD)
-    labNtpTick();
+    if (dongleRequested) ntpTick();
 #endif
     updateClockText();
   }
 #if OBD_CONNECTED_BUILD
+#if OBD_TIME_SYNC
+  timeSyncTick();
+#endif
   uint32_t now = millis();
-  if (!adapterReady && (now - lastAttempt >= WIFI_RETRY_MS || lastAttempt == 0)) {
+  if (dongleRequested && !adapterReady &&
+      (now - lastAttempt >= WIFI_RETRY_MS || lastAttempt == 0)) {
     lastAttempt = now;
     adapter.stop();
     if (WiFi.status() != WL_CONNECTED) {

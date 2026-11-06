@@ -1,4 +1,4 @@
-"""Source contract: RTC wall clock and LAB-only NTP.
+"""Source contract: RTC wall clock (temporarily off), NTP and manual dongle connect.
 
 Register/calendar logic is covered natively in tests/test_rtc8563.cpp.
 """
@@ -13,11 +13,35 @@ def section(start, end):
 
 
 class ClockTest(unittest.TestCase):
-    def test_ntp_exists_only_in_lab_build(self):
+    def test_ntp_only_in_connected_builds(self):
         self.assertEqual(SRC.count("configTime("), 1)
-        lab = section("#if defined(OBD_LAB_BUILD)\n// LAB only: the lab WLAN", "#endif")
-        self.assertIn("configTime(", lab)
-        self.assertIn("#if defined(OBD_LAB_BUILD)\n#include <esp_sntp.h>", SRC)
+        self.assertIn("configTime(", section("static void ntpTick()", "#if OBD_TIME_SYNC"))
+        self.assertIn("#if OBD_CONNECTED_BUILD\n#include <esp_sntp.h>", SRC)
+
+    def test_vehicle_ntp_only_on_home_wlan_before_dongle(self):
+        self.assertIn("#if OBD_CONNECTED_BUILD && !defined(OBD_LAB_BUILD) && defined(TIME_WIFI_SSID)", SRC)
+        sync = section("static void startTimeSync()", "static void startDongle()")
+        self.assertIn("WiFi.begin(TIME_WIFI_SSID, TIME_WIFI_PASSWORD);", sync)
+        end = section("static void endTimeSync(", "static void timeSyncTick()")
+        self.assertLess(end.index("esp_sntp_stop();"), end.index("WiFi.disconnect();"))
+        tick = section("static void timeSyncTick()", "#endif")
+        self.assertIn("ntpTick();", tick)
+        button = section("static void onDongleButton(lv_event_t *event) {", "#endif // OBD_CONNECTED_BUILD")
+        self.assertLess(button.index("endTimeSync("), button.index("startDongle();"))
+
+    def test_dongle_connects_only_on_request(self):
+        self.assertEqual(SRC.count("WiFi.begin(ELM_WIFI_SSID, ELM_WIFI_PASSWORD);"), 1)
+        self.assertIn("WiFi.begin(ELM_WIFI_SSID", section("static void startDongle()", "static void stopDongle()"))
+        setup = section("void setup() {", "void loop() {")
+        vehicle = setup.split("#if defined(OBD_LAB_BUILD)\n  startDongle();", 1)[1]
+        vehicle = vehicle.split("#else", 1)[1].split("Serial.println", 1)[0]
+        self.assertNotIn("startDongle();", vehicle)
+        self.assertIn("if (dongleRequested && !adapterReady &&", section("void loop() {", "delay(5);"))
+
+    def test_rtc_temporarily_disabled(self):
+        self.assertIn("#define OBD_RTC_ENABLED 0", SRC)
+        setup = section("void setup() {", "void loop() {")
+        self.assertIn("#if OBD_RTC_ENABLED\n  clockFromRtc();", setup)
 
     def test_rtc_is_read_before_sd_session_opens(self):
         setup = section("void setup() {", "void loop() {")
