@@ -35,7 +35,7 @@ bool pidSupported(uint8_t pid){return obd_pids::supported(pid,pidMasks);}
 void cancelDtcScan(){dtcScanRequested=false;}
 void showPage(uint8_t){}
 namespace obd_log {
-size_t mode06Row(char *,size_t,uint32_t,uint8_t,const char *,uint16_t,uint32_t){return 0;}
+size_t mode06Row(char *,size_t,uint32_t,uint8_t,const char *,uint16_t,uint32_t,const char *){return 0;}
 }
 String trimNumber(double value,uint8_t decimals){
   char text[64];snprintf(text,sizeof text,"%.*f",int(decimals),value);return text;
