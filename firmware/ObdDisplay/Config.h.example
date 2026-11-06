@@ -8,3 +8,8 @@
 // Original Android project's TCP endpoint (not an HTTP login).
 #define ELM_HOST "192.168.0.10"
 #define ELM_PORT 35000
+// Optional: home WLAN with internet for the boot-time NTP clock sync. The
+// display disconnects again before the dongle is connected (button on INFO).
+// Leave both undefined to skip the sync.
+// #define TIME_WIFI_SSID "YOUR_HOME_WIFI_SSID"
+// #define TIME_WIFI_PASSWORD "YOUR_HOME_WIFI_PASSWORD"
