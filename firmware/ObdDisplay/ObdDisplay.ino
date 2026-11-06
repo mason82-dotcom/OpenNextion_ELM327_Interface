@@ -974,14 +974,9 @@ static bool initAdapter() {
   // ATDPN is only meaningful after the protocol search above; before it
   // a real ELM327 reports "A0" and every DTC list would stay undecodable.
   if (!transact(Command::AdapterProtocolId, response, CMD_TIMEOUT_MS)) return false;
-  String proto = response;
-  proto.trim();
-  if (proto.startsWith("A") && proto.length() == 2) proto.remove(0,1);
-  if (proto.length() == 1 && proto[0]>='6' && proto[0]<='9')
-    dtcEncoding = obd_diag::DtcEncoding::Can;
-  else if (proto.length() == 1 && proto[0]>='1' && proto[0]<='5')
-    dtcEncoding = obd_diag::DtcEncoding::Legacy;
-  else dtcEncoding = obd_diag::DtcEncoding::Unknown;
+  // ISO 15765-4 CAN ('6'..'9', user CAN 'A'..'C') decodes as CAN, the J1850/
+  // ISO 9141/KWP buses ('1'..'5') as legacy; see obd_diag::encodingFromProtocol.
+  dtcEncoding = obd_diag::encodingFromProtocol(response.c_str());
   // The profile never forces a protocol; a mismatch is only reported.
   const bool busOk = obd_vehicle::busMatches(VEHICLE,
       dtcEncoding == obd_diag::DtcEncoding::Can);

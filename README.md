@@ -14,7 +14,7 @@ Eigenständiger OBD-II-Monitor auf dem **OpenNextion ONX3248G035** (ESP32-S3, 3,
 - **v0.2:** Navigation über vier Touchseiten LIVE, GRAPH, DTC und INFO; dunkles Diagramm mit 48 Messpunkten. 
 - **v0.2:** Getrennter Touch-Test und manuelle DTC-Schaltfläche: Seitenwechsel/Touch-Test lösen keine OBD-Abfragen aus. 
 - **v0.2:** WLAN-/ELM-Verbindungsanzeige und TX-/Timeout-/Antwortpuffer-Zähler (am Pi-Simulator bestätigt; echter Adapter nicht geprüft).
-- Gespeicherte (03), ausstehende (07) und permanente (0A) DTCs **zunächst als rohe Adapterantwort**, noch ohne vollständigen Multi-ECU-/ISO-TP-Dekoder.
+- Gespeicherte (03), ausstehende (07) und permanente (0A) DTCs werden dekodiert (CAN mit Count-Byte, ISO-TP-Indexformat `00A`/`0:`/`1:`, Legacy-7-Byte-Frames, mehrere ECU-Blöcke mit Duplikatfilter). Geprüft gegen die Dekodier-Vektoren der Android-App (`tests/test_obd_dtc_vectors_android.cpp`); am Fahrzeug noch nicht validiert.
 - Diagnose-Protokollzeilen über USB-Serial und (v0.3, im Verbindungsmodus) als CSV auf MicroSD: `/obd/S####_P##.csv`, Mode-06-Aussetzerzähler mit `pid`=`06A2`…`06A7`, eine Datei pro Sitzung, neue Teildatei ab 4 MB, Schreibpuffer jede Sekunde auf die Karte, Status auf der INFO-Seite. Noch keine Uhrzeit (keine RTC): Zeilen tragen Millisekunden seit Start.
 - Zentrale, geschlossene Allowlist; keine Mode 04/08, keine UDS-Schreibdienste, keine frei eingebbaren CAN-/ELM-Befehle, kein Terminal.
 
