@@ -53,6 +53,35 @@ inline const char *monitorName(std::size_t i, bool compression) {
   return "";
 }
 enum class DtcEncoding : std::uint8_t { Can, Legacy, Unknown };
+// Map an ELM327 ATDPN protocol id (e.g. "6", "A6", " 9 ", "A") to the DTC wire
+// encoding. Mirrors the Mercedes-OBD2 Android app's isCanProtocol() so both
+// code bases agree on which protocols decode as CAN:
+//   - an "A" (auto) prefix is dropped only when a protocol digit follows it;
+//   - '6'..'9' and 'A'..'C' are ISO 15765-4 / user-defined CAN  -> Can;
+//   - '1'..'5' are the J1850 / ISO 9141 / KWP legacy buses       -> Legacy;
+//   - anything else (incl. "0"/"A0" = no protocol negotiated yet) -> Unknown.
+inline DtcEncoding encodingFromProtocol(const char *atdpn) {
+  if (!atdpn) return DtcEncoding::Unknown;
+  char buf[8];
+  std::size_t n = 0;
+  for (const char *p = atdpn; *p; ++p) {
+    const char c = *p;
+    if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+      if (n == 0) continue;  // skip leading whitespace
+      break;                 // stop at trailing whitespace
+    }
+    if (n >= sizeof buf - 1) return DtcEncoding::Unknown;  // too long to be a protocol id
+    buf[n++] = (c >= 'a' && c <= 'z') ? static_cast<char>(c - 'a' + 'A') : c;
+  }
+  buf[n] = '\0';
+  const char *code = buf;
+  if (n > 1 && code[0] == 'A') { ++code; --n; }  // strip auto-prefix, keep a bare "A"
+  if (n != 1) return DtcEncoding::Unknown;
+  const char ch = code[0];
+  if ((ch >= '6' && ch <= '9') || (ch >= 'A' && ch <= 'C')) return DtcEncoding::Can;
+  if (ch >= '1' && ch <= '5') return DtcEncoding::Legacy;
+  return DtcEncoding::Unknown;
+}
 struct Dtc {
   char code[6] = {};
 };

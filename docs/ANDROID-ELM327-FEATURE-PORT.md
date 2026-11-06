@@ -63,7 +63,7 @@ müssen CI und `bash scripts/pi/build.sh lab` erfolgreich sein.
 | Erkennung unterstützter PIDs | **Portiert** für `0100/0120/0140` und mehrere ECU-Antworten | Headerlose, eindeutige Mode-01-Antworten |
 | KOEO/KOER | **Basisfunktion portiert** | Erkennung anhand RPM=0 bzw. RPM>0; kein alternativer Motorstatus |
 | Getaktetes Polling | **Portiert** | Nacheinander, keine gleichzeitigen TCP-Anfragen |
-| DTC 03,07,0A | **ELM ATH0-ISO-TP-Indexformat in Phase 3 portiert, ungetestet am Board** | Nur strikt vollständige `00A`/`0:`/`1:`-Nachrichten; ATH1/Raw-CAN und interleavte ECU-Ströme weiter nur Rohdaten |
+| DTC 03,07,0A | **ELM ATH0-ISO-TP-Indexformat portiert; gegen alle Android-`ObdParserDtcTest`-Vektoren geprueft** (`test_obd_dtc_vectors_android.cpp`), am Fahrzeug ungetestet | Nur strikt vollständige `00A`/`0:`/`1:`-Nachrichten; ATH1/Raw-CAN und interleavte ECU-Ströme weiter nur Rohdaten |
 | M272-Codehinweise | **Auszug portiert** | Schlüsselcodes P0016–19, P0171/174, P030x, P200x, P0128, P0101 |
 | HU/AU-Check | **Vorprüfung portiert** | MIL, DTC-Zahl, Monitore, Laufstrecken, Warmläufe, Freeze-DTC und Code-Abfragen. Keine amtliche HU/AU-Aussage |
 | Readiness 0101 | **Portiert** | Mehrere gültige ECU-Antworten zusammengeführt |
@@ -243,3 +243,17 @@ Fehlersimulation: [FUEL-TRIM-LAB-TEST.md](FUEL-TRIM-LAB-TEST.md).
 **Noch offen:** GitHub- und lokaler ESP32-Compile sowie der praktische
 45+-Sekunden-Zwei-Phasen-Test am Display. Eine alte erfolgreich
 geflashte LAB-Firmware enthält diese Funktionen noch nicht.
+
+## Phase 4: Android-DTC-Vektoren als Akzeptanztest (06.11.2026)
+
+Die Dekodier-Vektoren aus `obdcore/.../ObdParserDtcTest.java` (Android-App,
+auf OnePlus 13R mit ELM327-WLAN am C350 M272 betrieben) laufen jetzt als
+`tests/test_obd_dtc_vectors_android.cpp` gegen `obd_isotp::parseDtcs`:
+CAN mit Count-Byte und Padding, ISO-TP-Multiframe, "43" im Datenbereich,
+`SEARCHING...`, Legacy-7-Byte-Frames, mehrere ECU-Bloecke, B/C/U-Familien,
+Mode 07/0A. Alle Byte-Vektoren liefern dieselben Codes wie die App.
+
+Bewusste Abweichung: Die Firmware raet CAN/Legacy nie aus den DTC-Bytes,
+sondern legt die Kodierung aus `ATDPN` fest. Dafuer gibt es jetzt
+`obd_diag::encodingFromProtocol()`, gleichlautend zu `isCanProtocol()` der App.
+Neu dadurch: `A`..`C` (J1939/User-CAN) gelten als CAN, vorher nur `6`..`9`.
