@@ -254,6 +254,7 @@ static void resetPanel() {
   delay(120);
 }
 
+#if !OBD_CONNECTED_BUILD || defined(OBD_LAB_BUILD)
 static void i2cScan() {
   Serial.print("I2C:");
   for (uint8_t address = 1; address < 127; ++address) {
@@ -262,6 +263,7 @@ static void i2cScan() {
   }
   Serial.println();
 }
+#endif
 
 static bool rtcRead(rtc8563::DateTime &time) {
   Wire.beginTransmission(rtc8563::I2C_ADDRESS);
@@ -319,6 +321,10 @@ static void updateClockText() {
   }
   char iso[32];
   clockIso(iso, sizeof iso);
+  if (!iso[0]) {  // Quelle gesetzt, aber Systemzeit (noch) ungueltig
+    lv_label_set_text(clockText, "Uhr: nicht gestellt");
+    return;
+  }
   iso[16] = '\0';  // "2026-10-11T10:52"
   iso[10] = ' ';
   lv_label_set_text_fmt(clockText, "Uhr: %s UTC (%s)", iso,
@@ -1528,7 +1534,11 @@ void setup() {
   Serial.begin(115200);
   Wire.begin(NEXTION_IIC_SDA_PIN, NEXTION_IIC_SCL_PIN, 400000);
   resetPanel();
+  // Bus-Scan nur in den Bring-up-/LAB-Builds; der Fahrzeug-Produktionsbuild
+  // startet ohne diese Debug-Ausgabe und ohne das zusaetzliche Boot-Delay.
+#if !OBD_CONNECTED_BUILD || defined(OBD_LAB_BUILD)
   i2cScan();
+#endif
   clockFromRtc();
   gfx->begin(LCD_SPI_HZ);
   gfx->setRotation(0);
